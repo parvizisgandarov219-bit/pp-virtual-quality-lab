@@ -12,6 +12,8 @@ st.set_page_config(
 grade_models = joblib.load(
     "virtual_lab_models.joblib"
 )
+st.write(type(grade_models))
+st.write(grade_models)
 st.write(grade_models.keys())
 GRADE_OPTIONS = [
     "CA0900BM",
