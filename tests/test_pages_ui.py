@@ -1,12 +1,9 @@
 """Direct unit tests for small pure helper functions inside pages_ui/*.
 
-These exist because SUPPORTED_GRADES currently only contains "C"-prefix
-(HECO) grades, so the HOMO/RACO branches of the single-prediction page's
-family-derivation logic can't be exercised by actually selecting a grade
-in the live app (see tests/test_ui_apptest.py). Calling the helper
-function directly, with real grade codes drawn from the model's full
-31-grade trained schema, verifies that logic is correct and ready for
-whenever a HOMO/RACO grade is added to SUPPORTED_GRADES.
+These are fast, isolated unit tests of the family-derivation display
+logic in pages_ui/single_prediction.py, independent of a running
+Streamlit session. The same three grades are also exercised end-to-end
+through the real live selectbox in tests/test_ui_apptest.py.
 """
 
 from pages_ui.single_prediction import _family_display

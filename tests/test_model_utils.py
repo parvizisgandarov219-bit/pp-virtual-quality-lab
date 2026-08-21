@@ -25,16 +25,31 @@ def artifact():
     return model_utils.load_model_artifact(MODEL_PATH)
 
 
-def test_supported_grades_unchanged_by_refactor():
-    # Regression guard: SUPPORTED_GRADES was moved from an inline
-    # GRADE_OPTIONS list in app.py into model_utils.py (P3.1 batch
-    # prediction work). Content and order must be unchanged, since
-    # app.py's default selectbox index depends on this exact order.
+def test_supported_grades_content_and_order():
+    # Regression guard: the original 11 HECO grades must keep their
+    # original list positions - the Single Prediction page's default
+    # selectbox index (8 = CB4848MO) depends on this exact order.
+    # HB3500GP (HOMO) and RB4545MO (RACO) were appended afterward, once
+    # verified present in the real model schema (see
+    # test_derive_grade_family_by_prefix and test_batch_utils.py).
     assert model_utils.SUPPORTED_GRADES == [
         "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
         "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
+        "HB3500GP", "RB4545MO",
     ]
     assert model_utils.SUPPORTED_GRADES[8] == "CB4848MO"
+
+
+def test_supported_grades_have_a_matching_trained_column_for_every_target(artifact):
+    # Every SUPPORTED_GRADES entry must have a real Grade_<code> column in
+    # every target's trained schema - this is what makes it safe to expose
+    # in the UI at all.
+    feature_columns = artifact["feature_columns"]
+    for grade in model_utils.SUPPORTED_GRADES:
+        for target in model_utils.TARGET_PROPERTIES:
+            assert f"Grade_{grade}" in feature_columns[target], (
+                f"{grade} is missing a trained column for {target}"
+            )
 
 
 def test_load_model_artifact_has_expected_shape(artifact):
@@ -100,6 +115,7 @@ def test_predict_all_raises_for_untrained_grade(artifact):
 @pytest.mark.parametrize("grade", [
     "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
     "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
+    "HB3500GP", "RB4545MO",
 ])
 def test_predict_all_works_for_every_ui_grade(artifact, grade):
     predictions = model_utils.predict_all(

@@ -18,6 +18,11 @@ TARGET_PROPERTIES = ["Izod Impact", "Tensile Modulus", "Flexural Modulus"]
 # for every target - see tests/test_model_utils.py). This is the single
 # source of truth for both the single-prediction dropdown and batch
 # validation, so they cannot drift apart.
+#
+# HB3500GP (HOMO) and RB4545MO (RACO) are appended after the original 11
+# HECO grades, rather than inserted alphabetically, specifically so the
+# original grades keep their original list positions - app.py's default
+# selectbox index (8 = CB4848MO) depends on that order being stable.
 SUPPORTED_GRADES = [
     "CA0900BM",
     "CB0900MO",
@@ -30,6 +35,8 @@ SUPPORTED_GRADES = [
     "CB4848MO",
     "CB6448MO",
     "CB8248MO",
+    "HB3500GP",
+    "RB4545MO",
 ]
 
 # Input bounds shared by the single-prediction form and batch validation.
@@ -68,11 +75,9 @@ FAMILY_LABELS = {
 #   C -> HECO (High Impact Copolymer / ICP)
 #   R -> RACO (Random Copolymer)
 #   H -> HOMO (Homopolymer)
-# All 11 grades in SUPPORTED_GRADES currently start with "C", so today
-# every selectable grade derives to HECO - the HOMO/RACO branches are
-# real and tested, but only reachable today via grade codes elsewhere in
-# the model's 31-grade trained schema (e.g. "HB..." / "RB..." / "RA...")
-# that aren't yet exposed in SUPPORTED_GRADES.
+# SUPPORTED_GRADES spans all three prefixes (11 "C" / HECO grades,
+# HB3500GP / HOMO, RB4545MO / RACO), so all three branches are reachable
+# through the real UI, not just via direct unit tests.
 GRADE_FAMILY_PREFIX_MAP = {
     "C": FAMILY_HECO,
     "R": FAMILY_RACO,

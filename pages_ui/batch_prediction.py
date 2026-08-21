@@ -9,6 +9,7 @@ from batch_utils import (
     summarize_batch_results,
     validate_and_predict_batch,
 )
+from model_utils import SUPPORTED_GRADES
 
 _STATUS_STYLE = {
     "OK": "background-color: #E4F1E9; color: #2E7D4F;",
@@ -49,7 +50,7 @@ def render(artifact: dict) -> None:
     uploaded_file = st.file_uploader(
         "Upload batch file",
         type=["csv", "xlsx"],
-        help="Grade must be one of the 11 grades supported on the Dashboard.",
+        help=f"Grade must be one of the {len(SUPPORTED_GRADES)} grades supported on the Dashboard.",
     )
 
     if uploaded_file is None:
