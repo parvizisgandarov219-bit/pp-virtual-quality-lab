@@ -4,13 +4,14 @@ Kept free of any Streamlit dependency, like model_utils.py, so it can be
 imported and tested directly with pytest.
 
 Design notes (see README for the full write-up):
-  - This repo has no verified Grade -> Family mapping, so "Grade Family"
-    is taken as given by the uploader via an optional column, never
-    inferred from the grade code.
-  - If the file has no "Grade Family" column at all, every row requires
-    Grade/MFR/XS/C2 - identical to the single-prediction form's baseline.
-  - If a "Grade Family" column is present, HOMO rows may omit C2 (it
-    defaults to 0.0); RACO/HECO/ICP rows still require it.
+  - Grade Family is derived from the grade code's first letter (see
+    model_utils.derive_grade_family): C -> HECO, R -> RACO, H -> HOMO.
+  - If the file has no "Grade Family" column, or a row's cell is blank,
+    the family is simply derived from Grade - that's not an error.
+  - If a row *does* supply a Grade Family value, it must agree with the
+    grade-derived family (ICP is accepted as a synonym for HECO) or the
+    row is flagged as an error rather than silently corrected/overridden.
+  - HOMO rows may omit C2 (it defaults to 0.0); RACO/HECO rows require it.
   - Every row is validated independently: one bad row never blocks the
     rest of the batch from producing predictions.
 """
@@ -22,13 +23,13 @@ import pandas as pd
 
 from model_utils import (
     C2_BOUNDS,
-    FAMILIES_REQUIRING_C2,
     FAMILY_HOMO,
     MFR_BOUNDS,
     SUPPORTED_GRADES,
     TARGET_PROPERTIES,
-    VALID_FAMILIES,
     XS_BOUNDS,
+    derive_grade_family,
+    normalize_family_input,
     predict_all,
 )
 
@@ -161,12 +162,15 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
         row_errors = []
 
         grade = _clean_str(row[grade_col])
+        grade_valid = False
         if not grade:
             row_errors.append("Grade is missing")
         elif grade not in SUPPORTED_GRADES:
             row_errors.append(
                 f"Unsupported grade '{grade}'. Supported grades: {', '.join(SUPPORTED_GRADES)}"
             )
+        else:
+            grade_valid = True
 
         mfr, mfr_error = _parse_numeric(row[mfr_col], "MFR", MFR_BOUNDS)
         if mfr_error:
@@ -176,18 +180,35 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
         if xs_error:
             row_errors.append(xs_error)
 
-        family = None
+        # Grade Family is derived from the grade code's first letter. A
+        # supplied value is never used to silently override that - it's
+        # only ever compared against it, and a mismatch is an error.
+        derived_family = None
+        if grade_valid:
+            try:
+                derived_family = derive_grade_family(grade)
+            except ValueError as exc:
+                row_errors.append(str(exc))
+
+        family = derived_family
         if family_col is not None:
             raw_family = _clean_str(row[family_col])
-            if not raw_family:
-                row_errors.append("Grade Family column present but value is missing for this row")
-            elif raw_family.upper() not in VALID_FAMILIES:
-                row_errors.append(
-                    f"Invalid Grade Family '{raw_family}'. Expected one of: "
-                    + ", ".join(sorted(VALID_FAMILIES))
-                )
-            else:
-                family = raw_family.upper()
+            if raw_family:
+                supplied_family = normalize_family_input(raw_family)
+                if supplied_family is None:
+                    row_errors.append(
+                        f"Invalid Grade Family '{raw_family}'. Expected HOMO, "
+                        "RACO, or HECO (ICP is accepted as a synonym for HECO)."
+                    )
+                elif derived_family is not None and supplied_family != derived_family:
+                    row_errors.append(
+                        f"Grade Family '{raw_family}' does not match grade "
+                        f"'{grade}' (grade codes starting with '{grade[0]}' "
+                        f"are {derived_family})."
+                    )
+                else:
+                    family = supplied_family
+            # a blank cell falls through and keeps the derived family
 
         c2_cell = row[c2_col] if c2_col is not None else None
         c2_blank = c2_col is None or _is_blank(c2_cell)
@@ -195,7 +216,7 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
         if family == FAMILY_HOMO and c2_blank:
             c2 = 0.0
         elif c2_blank:
-            reason = f" for family {family}" if family in FAMILIES_REQUIRING_C2 else ""
+            reason = f" for family {family}" if family else ""
             row_errors.append(f"C2 is required{reason}")
             c2 = None
         else:

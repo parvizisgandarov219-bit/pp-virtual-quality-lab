@@ -127,6 +127,53 @@ def test_original_columns_preserved_and_new_columns_appended(models, feature_col
     assert list(result.columns) == list(df.columns) + expected_new_columns
 
 
+def test_production_date_and_batch_number_preserved_as_batch_identity(models, feature_columns):
+    # Production Date and Batch Number are treated as the batch's identity
+    # for future history/matching work. They're not part of the prediction
+    # schema, so they must pass through completely unchanged - same
+    # generic passthrough as any other extra column, verified explicitly
+    # here because these two specifically matter for future matching.
+    df = pd.DataFrame({
+        "Production Date": ["2026-08-17", "2026-08-18"],
+        "Batch Number": ["B-2026-0817-01", "B-2026-0818-04"],
+        "Grade": [VALID_GRADE_1, VALID_GRADE_2],
+        "MFR": [48.0, 12.5],
+        "XS": [16.0, 4.2],
+        "C2": [8.6, 1.1],
+    })
+    result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
+
+    assert list(result["Production Date"]) == ["2026-08-17", "2026-08-18"]
+    assert list(result["Batch Number"]) == ["B-2026-0817-01", "B-2026-0818-04"]
+    # both rows still predicted successfully - identity columns don't
+    # interfere with validation or prediction
+    assert (result[batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK).all()
+    # and they keep their original position ahead of the prediction/status
+    # columns, exactly like any other original column
+    assert list(result.columns)[:2] == ["Production Date", "Batch Number"]
+
+
+def test_production_date_and_batch_number_do_not_affect_predictions(models, feature_columns):
+    # Same Grade/MFR/XS/C2, different Production Date and Batch Number ->
+    # predictions must be identical. These columns are never read by the
+    # model - only Grade/MFR/XS/C2 feed build_feature_row/predict_all.
+    common = {"Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6]}
+    df_a = pd.DataFrame({
+        "Production Date": ["2026-01-01"], "Batch Number": ["B-AAA"], **common,
+    })
+    df_b = pd.DataFrame({
+        "Production Date": ["2099-12-31"], "Batch Number": ["B-ZZZ-DIFFERENT"], **common,
+    })
+
+    result_a = batch_utils.validate_and_predict_batch(df_a, models, feature_columns)
+    result_b = batch_utils.validate_and_predict_batch(df_b, models, feature_columns)
+
+    for column in [
+        "Predicted Izod Impact", "Predicted Tensile Modulus", "Predicted Flexural Modulus",
+    ]:
+        assert result_a.loc[0, column] == pytest.approx(result_b.loc[0, column])
+
+
 def test_unsupported_grade_row_is_isolated_error(models, feature_columns):
     df = pd.DataFrame({
         "Grade": [UNTRAINED_GRADE, VALID_GRADE_1],
@@ -175,6 +222,8 @@ def test_non_numeric_mfr_is_error(models, feature_columns):
 
 
 def test_missing_c2_is_error_when_no_family_column(models, feature_columns):
+    # CB4848MO derives to HECO regardless of whether a Grade Family column
+    # is present, and HECO always requires C2.
     df = pd.DataFrame({"Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [None]})
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
@@ -188,41 +237,56 @@ def test_missing_c2_column_entirely_is_error_when_no_family_column(models, featu
     assert "C2 is required" in result.loc[0, batch_utils.ERROR_COLUMN]
 
 
-# --- Grade Family logic --------------------------------------------------
+# --- Grade Family logic: derived from grade prefix ------------------------
+#
+# All 11 grades in SUPPORTED_GRADES start with "C" (-> HECO), so the
+# happy-path HOMO/RACO scenarios can't be reached through this function's
+# public API with a real supported grade. Where that matters, tests below
+# temporarily widen SUPPORTED_GRADES (via monkeypatch) to include a real
+# HOMO-prefix grade drawn from the model's actual 31-grade trained schema
+# ("HB3500GP") - the prediction itself stays completely real, only the
+# UI-exposed allowlist is widened, and only for that one test.
 
-def test_homo_family_with_blank_c2_defaults_to_zero(models, feature_columns):
+def test_family_auto_derived_when_column_absent_succeeds(models, feature_columns):
+    df = pd.DataFrame({"Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6]})
+    result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
+    assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
+
+
+def test_family_auto_derived_when_cell_blank_succeeds(models, feature_columns):
+    # A blank Grade Family cell (column present) is no longer an error -
+    # it's simply derived from the grade instead.
     df = pd.DataFrame({
-        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [None],
-        "Grade Family": ["HOMO"],
+        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6],
+        "Grade Family": [None],
     })
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
-
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
-    expected = model_utils.predict_all(models, feature_columns, VALID_GRADE_1, 48.0, 16.0, 0.0)
-    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
 
 
-def test_homo_family_with_explicit_c2_uses_given_value(models, feature_columns):
+@pytest.mark.parametrize("family_value", ["HECO", "heco", "ICP", "icp"])
+def test_supplied_family_matching_grade_prefix_succeeds(models, feature_columns, family_value):
+    # HECO, or its ICP synonym, is consistent with CB4848MO's "C" prefix.
     df = pd.DataFrame({
-        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [2.0],
-        "Grade Family": ["HOMO"],
+        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6],
+        "Grade Family": [family_value],
     })
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
-
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
-    expected = model_utils.predict_all(models, feature_columns, VALID_GRADE_1, 48.0, 16.0, 2.0)
-    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
 
 
-@pytest.mark.parametrize("family", ["RACO", "HECO", "ICP", "raco", "heco"])
-def test_non_homo_family_with_blank_c2_is_error(models, feature_columns, family):
+@pytest.mark.parametrize("family_value", ["HOMO", "RACO"])
+def test_supplied_family_conflicting_with_grade_prefix_is_error(models, feature_columns, family_value):
+    # CB4848MO's prefix derives HECO. Supplying HOMO or RACO for it is
+    # inconsistent and must be flagged, not silently corrected.
     df = pd.DataFrame({
-        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [None],
-        "Grade Family": [family],
+        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6],
+        "Grade Family": [family_value],
     })
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
-    assert "C2 is required" in result.loc[0, batch_utils.ERROR_COLUMN]
+    assert "does not match grade" in result.loc[0, batch_utils.ERROR_COLUMN]
+    assert pd.isna(result.loc[0, "Predicted Izod Impact"])
 
 
 def test_invalid_family_value_is_error(models, feature_columns):
@@ -235,14 +299,58 @@ def test_invalid_family_value_is_error(models, feature_columns):
     assert "Invalid Grade Family" in result.loc[0, batch_utils.ERROR_COLUMN]
 
 
-def test_blank_family_value_with_family_column_present_is_error(models, feature_columns):
+def test_homo_grade_blank_c2_defaults_to_zero(models, feature_columns, monkeypatch):
+    homo_grade = "HB3500GP"
+    monkeypatch.setattr(
+        batch_utils, "SUPPORTED_GRADES", model_utils.SUPPORTED_GRADES + [homo_grade]
+    )
+
+    df = pd.DataFrame({"Grade": [homo_grade], "MFR": [48.0], "XS": [16.0], "C2": [None]})
+    result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
+
+    assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
+    expected = model_utils.predict_all(models, feature_columns, homo_grade, 48.0, 16.0, 0.0)
+    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
+
+
+def test_homo_grade_explicit_c2_uses_given_value(models, feature_columns, monkeypatch):
+    homo_grade = "HB3500GP"
+    monkeypatch.setattr(
+        batch_utils, "SUPPORTED_GRADES", model_utils.SUPPORTED_GRADES + [homo_grade]
+    )
+
+    df = pd.DataFrame({"Grade": [homo_grade], "MFR": [48.0], "XS": [16.0], "C2": [2.0]})
+    result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
+
+    assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
+    expected = model_utils.predict_all(models, feature_columns, homo_grade, 48.0, 16.0, 2.0)
+    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
+
+
+def test_raco_grade_matching_family_succeeds(models, feature_columns, monkeypatch):
+    raco_grade = "RB4545MO"
+    monkeypatch.setattr(
+        batch_utils, "SUPPORTED_GRADES", model_utils.SUPPORTED_GRADES + [raco_grade]
+    )
+
     df = pd.DataFrame({
-        "Grade": [VALID_GRADE_1], "MFR": [48.0], "XS": [16.0], "C2": [8.6],
-        "Grade Family": [None],
+        "Grade": [raco_grade], "MFR": [48.0], "XS": [16.0], "C2": [4.0],
+        "Grade Family": ["RACO"],
     })
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
+    assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
+
+
+def test_raco_grade_blank_c2_is_error(models, feature_columns, monkeypatch):
+    raco_grade = "RB4545MO"
+    monkeypatch.setattr(
+        batch_utils, "SUPPORTED_GRADES", model_utils.SUPPORTED_GRADES + [raco_grade]
+    )
+
+    df = pd.DataFrame({"Grade": [raco_grade], "MFR": [48.0], "XS": [16.0], "C2": [None]})
+    result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
-    assert "Grade Family column present but value is missing" in result.loc[0, batch_utils.ERROR_COLUMN]
+    assert "C2 is required" in result.loc[0, batch_utils.ERROR_COLUMN]
 
 
 # --- mixed realistic batch -----------------------------------------------
@@ -252,8 +360,8 @@ def test_mixed_batch_realistic(models, feature_columns):
         "Grade": [VALID_GRADE_1, VALID_GRADE_2, UNTRAINED_GRADE, VALID_GRADE_1, VALID_GRADE_1],
         "MFR": [48.0, 12.5, 30.0, 999.0, 48.0],
         "XS": [16.0, 4.2, 10.0, 16.0, 16.0],
-        "C2": [8.6, 1.1, 5.0, 8.6, None],
-        "Grade Family": ["RACO", "HOMO", "HECO", "RACO", "HOMO"],
+        "C2": [8.6, 1.1, 5.0, 8.6, 3.0],
+        "Grade Family": ["HECO", "ICP", "HECO", "HECO", None],
     })
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     summary = batch_utils.summarize_batch_results(result)
@@ -263,7 +371,7 @@ def test_mixed_batch_realistic(models, feature_columns):
     assert summary["errors"] == 2  # row 2 (bad grade), row 3 (MFR out of range)
     assert result.loc[2, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
     assert result.loc[3, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
-    assert result.loc[4, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK  # HOMO, blank C2 -> 0.0
+    assert result.loc[4, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK  # blank family cell -> auto-derived HECO
 
 
 # --- serialization ---------------------------------------------------------

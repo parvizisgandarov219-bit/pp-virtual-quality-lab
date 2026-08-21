@@ -108,6 +108,92 @@ def test_predict_all_works_for_every_ui_grade(artifact, grade):
     assert all(value == value for value in predictions.values()), "prediction is NaN"  # NaN != NaN
 
 
+def test_izod_impact_unit_is_kj_per_m2():
+    assert model_utils.IZOD_IMPACT_UNIT == "kJ/m²"
+
+
+def test_family_labels_are_exact():
+    assert model_utils.FAMILY_LABELS[model_utils.FAMILY_HOMO] == "HOMO — Homopolymer"
+    assert model_utils.FAMILY_LABELS[model_utils.FAMILY_RACO] == "RACO — Random Copolymer"
+    assert model_utils.FAMILY_LABELS[model_utils.FAMILY_HECO] == "HECO — High Impact Copolymer (ICP)"
+
+
+# Real grade codes drawn from the model's full 31-grade trained schema
+# (see tests/test_batch_utils.py's UNTRAINED_GRADE note) - used here to
+# exercise all three prefix rules even though only the "C" ones are in
+# SUPPORTED_GRADES today.
+@pytest.mark.parametrize("grade,expected_family", [
+    ("CB4848MO", model_utils.FAMILY_HECO),
+    ("CB3000GT", model_utils.FAMILY_HECO),
+    ("CA0900BM", model_utils.FAMILY_HECO),
+    ("RB4545MO", model_utils.FAMILY_RACO),
+    ("RA0342EX", model_utils.FAMILY_RACO),
+    ("HB3500GP", model_utils.FAMILY_HOMO),
+    ("HB6540MO", model_utils.FAMILY_HOMO),
+])
+def test_derive_grade_family_by_prefix(grade, expected_family):
+    assert model_utils.derive_grade_family(grade) == expected_family
+
+
+def test_derive_grade_family_is_case_insensitive_on_prefix():
+    assert model_utils.derive_grade_family("cb4848mo") == model_utils.FAMILY_HECO
+
+
+def test_derive_grade_family_rejects_empty_grade():
+    with pytest.raises(ValueError, match="required"):
+        model_utils.derive_grade_family("")
+
+
+def test_derive_grade_family_rejects_unrecognized_prefix():
+    with pytest.raises(ValueError, match="starts with"):
+        model_utils.derive_grade_family("PP0102TR")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("HOMO", model_utils.FAMILY_HOMO),
+    ("homo", model_utils.FAMILY_HOMO),
+    ("RACO", model_utils.FAMILY_RACO),
+    ("HECO", model_utils.FAMILY_HECO),
+    ("ICP", model_utils.FAMILY_HECO),
+    ("icp", model_utils.FAMILY_HECO),
+])
+def test_normalize_family_input_recognizes_valid_tokens_and_icp_synonym(raw, expected):
+    assert model_utils.normalize_family_input(raw) == expected
+
+
+def test_normalize_family_input_rejects_unrecognized_token():
+    assert model_utils.normalize_family_input("SOMETHING_ELSE") is None
+
+
+def test_resolve_c2_for_family_homo_always_zero():
+    assert model_utils.resolve_c2_for_family(model_utils.FAMILY_HOMO, 8.6) == 0.0
+    assert model_utils.resolve_c2_for_family(model_utils.FAMILY_HOMO, 0.0) == 0.0
+
+
+@pytest.mark.parametrize("family", [
+    None, model_utils.FAMILY_RACO, model_utils.FAMILY_HECO, model_utils.FAMILY_ICP,
+])
+def test_resolve_c2_for_family_passthrough_for_non_homo(family):
+    assert model_utils.resolve_c2_for_family(family, 8.6) == 8.6
+    assert model_utils.resolve_c2_for_family(family, 0.0) == 0.0
+
+
+def test_resolve_c2_matches_predict_all_for_homo(artifact):
+    # The single-prediction UI resolves C2 via resolve_c2_for_family before
+    # calling predict_all. Confirm that path produces the exact same
+    # prediction as calling predict_all with c2=0.0 directly.
+    resolved = model_utils.resolve_c2_for_family(model_utils.FAMILY_HOMO, 8.6)
+    via_helper = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], VALID_GRADE, 48.0, 16.0, resolved
+    )
+    direct = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], VALID_GRADE, 48.0, 16.0, 0.0
+    )
+    assert via_helper.keys() == direct.keys()
+    for target in via_helper:
+        assert via_helper[target] == pytest.approx(direct[target])
+
+
 def test_metrics_are_read_from_artifact_not_hardcoded(artifact):
     metrics = artifact["metrics"]
     for target in model_utils.TARGET_PROPERTIES:

@@ -40,16 +40,88 @@ MFR_BOUNDS = (0.0, 150.0)
 XS_BOUNDS = (0.0, 40.0)
 C2_BOUNDS = (0.0, 25.0)
 
-# Grade family logic for batch prediction (see batch_utils.py). Not derived
-# from or cross-checked against the grade code itself - this repo has no
-# verified Grade -> Family mapping, so family is taken as given by the
-# uploader via an optional "Grade Family" column.
+# Grade family classification. HOMO/RACO/HECO are the three families the
+# system recognizes; ICP is kept only as an accepted synonym for HECO
+# ("High Impact Copolymer" is the same thing as "HECO" in this project's
+# usage) so text like "ICP" in an uploaded file's Grade Family column is
+# still accepted rather than rejected outright.
 FAMILY_HOMO = "HOMO"
 FAMILY_RACO = "RACO"
 FAMILY_HECO = "HECO"
 FAMILY_ICP = "ICP"
 VALID_FAMILIES = {FAMILY_HOMO, FAMILY_RACO, FAMILY_HECO, FAMILY_ICP}
 FAMILIES_REQUIRING_C2 = {FAMILY_RACO, FAMILY_HECO, FAMILY_ICP}
+
+# Input tokens that should be treated as an alias of another family before
+# any comparison/validation happens. Currently just ICP -> HECO.
+FAMILY_SYNONYMS = {FAMILY_ICP: FAMILY_HECO}
+
+# Exact user-facing labels for each family, as specified by the project
+# owner - used verbatim in the UI, not paraphrased.
+FAMILY_LABELS = {
+    FAMILY_HOMO: "HOMO — Homopolymer",
+    FAMILY_RACO: "RACO — Random Copolymer",
+    FAMILY_HECO: "HECO — High Impact Copolymer (ICP)",
+}
+
+# Grade Family is derived from the grade code's first letter:
+#   C -> HECO (High Impact Copolymer / ICP)
+#   R -> RACO (Random Copolymer)
+#   H -> HOMO (Homopolymer)
+# All 11 grades in SUPPORTED_GRADES currently start with "C", so today
+# every selectable grade derives to HECO - the HOMO/RACO branches are
+# real and tested, but only reachable today via grade codes elsewhere in
+# the model's 31-grade trained schema (e.g. "HB..." / "RB..." / "RA...")
+# that aren't yet exposed in SUPPORTED_GRADES.
+GRADE_FAMILY_PREFIX_MAP = {
+    "C": FAMILY_HECO,
+    "R": FAMILY_RACO,
+    "H": FAMILY_HOMO,
+}
+
+
+def derive_grade_family(grade: str) -> str:
+    """Derive the Grade Family from a grade code's first letter.
+
+    Raises ValueError if grade is empty, or its first letter isn't one of
+    C/R/H. In practice this is unreachable for any grade that has already
+    passed a SUPPORTED_GRADES membership check, since every currently
+    supported grade starts with "C" - the check exists for correctness on
+    any future grade code, not because it's expected to trigger today.
+    """
+    if not grade:
+        raise ValueError("Grade is required to derive its Grade Family.")
+
+    prefix = grade[0].upper()
+    family = GRADE_FAMILY_PREFIX_MAP.get(prefix)
+    if family is None:
+        raise ValueError(
+            f"Cannot derive Grade Family for grade '{grade}': grade codes "
+            "are expected to start with 'C' (HECO), 'R' (RACO), or 'H' "
+            f"(HOMO), but '{grade}' starts with '{prefix}'."
+        )
+    return family
+
+
+def normalize_family_input(raw_family: str) -> str | None:
+    """Normalize a raw Grade Family string (e.g. from an uploaded file) to
+    one of FAMILY_HOMO/FAMILY_RACO/FAMILY_HECO, applying FAMILY_SYNONYMS.
+
+    Returns None if raw_family isn't a recognized family or synonym.
+    Case-insensitive; leading/trailing whitespace should already be
+    stripped by the caller.
+    """
+    normalized = raw_family.upper()
+    normalized = FAMILY_SYNONYMS.get(normalized, normalized)
+    if normalized in (FAMILY_HOMO, FAMILY_RACO, FAMILY_HECO):
+        return normalized
+    return None
+
+# Display unit for Izod Impact predictions, confirmed by the project owner.
+# Tensile/Flexural Modulus are already labeled "MPa" at their call sites.
+# This is a display label only - it does not convert, scale, or otherwise
+# alter the model's numeric output in any way.
+IZOD_IMPACT_UNIT = "kJ/m²"
 
 LOG_COLUMNS = [
     "timestamp_utc",
@@ -166,6 +238,24 @@ def predict_all(
         feature_row = build_feature_row(target, feature_columns, grade, mfr, xs, c2)
         predictions[target] = models[target].predict(feature_row)[0]
     return predictions
+
+
+def resolve_c2_for_family(family: str | None, c2_input: float) -> float:
+    """Resolve the C2 (ethylene comonomer) value to use for an interactive
+    single prediction, given an optional Grade Family selection.
+
+    Mirrors the batch-prediction rule (see batch_utils.py): a HOMO grade
+    is a homopolymer, so ethylene comonomer isn't applicable and the
+    resolved C2 is always 0.0 regardless of the raw input - the calling
+    UI is expected to disable/zero the C2 control when HOMO is selected,
+    and this function is the single source of truth enforcing that rule
+    regardless. Any other family, or no family specified (None), passes
+    c2_input through unchanged - identical to the original single-
+    prediction behavior that always required a manually entered C2.
+    """
+    if family == FAMILY_HOMO:
+        return 0.0
+    return c2_input
 
 
 def log_prediction(log_path: Path, grade: str, mfr: float, xs: float, c2: float, predictions: dict) -> None:
