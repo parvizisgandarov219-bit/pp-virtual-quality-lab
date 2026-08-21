@@ -104,7 +104,6 @@ GRADE_OPTIONS = [
     "CB1248MO",
     "CB1640MO",
     "CB1849MO",
-    "CB2000GT",
     "CB3000GT",
     "CB3648MO",
     "CB4048MO",
@@ -144,7 +143,7 @@ with left:
     grade = st.selectbox(
         "Grade",
         GRADE_OPTIONS,
-        index=9
+        index=8
     )
 
 with middle1:
