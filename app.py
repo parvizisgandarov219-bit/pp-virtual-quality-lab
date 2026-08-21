@@ -1,8 +1,8 @@
 from pathlib import Path
 
-import joblib
-import pandas as pd
 import streamlit as st
+
+from model_utils import load_model_artifact, log_prediction, predict_all
 
 st.set_page_config(
     page_title="PP Virtual Quality Lab",
@@ -10,92 +10,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# Resolve the model path relative to this script so it loads correctly
-# regardless of the working directory Streamlit is launched from.
-MODEL_PATH = Path(__file__).parent / "pp_virtual_lab_models .joblib"
+# Resolve paths relative to this script so they work correctly regardless
+# of the working directory Streamlit is launched from.
+APP_DIR = Path(__file__).parent
+MODEL_PATH = APP_DIR / "pp_virtual_lab_models .joblib"
 
-TARGET_PROPERTIES = ["Izod Impact", "Tensile Modulus", "Flexural Modulus"]
+# Best-effort local audit log of predictions made. NOTE: on Streamlit
+# Community Cloud the filesystem is ephemeral, so this file will not
+# survive an app restart/redeploy there - see README for details.
+PREDICTION_LOG_PATH = APP_DIR / "predictions_log.csv"
 
 
 @st.cache_resource(show_spinner="Loading prediction models...")
-def load_model_artifact(path: Path) -> dict:
-    """Load the trained model artifact and verify it has the expected shape.
-
-    Expected structure:
-        {
-            "models": {target_name: fitted sklearn estimator, ...},
-            "feature_columns": {target_name: [ordered feature names], ...},
-            "metrics": {target_name: {"rows": int, "r2": float, "mae": float}, ...},
-        }
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"Model file not found at: {path}")
-
-    artifact = joblib.load(path)
-
-    if not isinstance(artifact, dict):
-        raise ValueError(
-            f"Model artifact has unexpected type {type(artifact).__name__}; "
-            "expected a dict with 'models', 'feature_columns', and 'metrics'."
-        )
-
-    required_keys = {"models", "feature_columns", "metrics"}
-    missing_keys = required_keys - artifact.keys()
-    if missing_keys:
-        raise ValueError(
-            f"Model artifact is missing expected key(s): {sorted(missing_keys)}"
-        )
-
-    missing_targets = [
-        target for target in TARGET_PROPERTIES
-        if target not in artifact["models"]
-        or target not in artifact["feature_columns"]
-        or target not in artifact["metrics"]
-    ]
-    if missing_targets:
-        raise ValueError(
-            f"Model artifact is missing data for target(s): {missing_targets}"
-        )
-
-    return artifact
-
-
-def build_feature_row(
-    target: str,
-    feature_columns: dict,
-    grade: str,
-    mfr: float,
-    xs: float,
-    c2: float,
-) -> pd.DataFrame:
-    """Build a single-row DataFrame matching the exact schema the target's
-    model was trained on (raw numeric features + one-hot grade dummies).
-
-    Raises ValueError if the selected grade was not part of the training
-    schema for this target, instead of silently predicting on an
-    all-zero / unknown grade encoding.
-    """
-    columns = feature_columns[target]
-    row = {column: 0.0 for column in columns}
-
-    for base_column, value in (("MFR", mfr), ("XS", xs), ("C2", c2)):
-        if base_column not in row:
-            raise ValueError(
-                f"Expected feature '{base_column}' is missing from the "
-                f"{target} model's trained schema."
-            )
-        row[base_column] = value
-
-    grade_column = f"Grade_{grade}"
-    if grade_column not in row:
-        raise ValueError(
-            f"Grade '{grade}' was not part of the training data for the "
-            f"{target} model, so a reliable prediction cannot be produced "
-            "for this grade."
-        )
-    row[grade_column] = 1.0
-
-    return pd.DataFrame([row], columns=columns)
+def _load_cached_model_artifact(path: Path) -> dict:
+    return load_model_artifact(path)
 
 
 GRADE_OPTIONS = [
@@ -120,7 +48,7 @@ st.info(
 )
 
 try:
-    artifact = load_model_artifact(MODEL_PATH)
+    artifact = _load_cached_model_artifact(MODEL_PATH)
     load_error = None
 except Exception as exc:
     artifact = None
@@ -182,12 +110,7 @@ if st.button(
     use_container_width=True
 ):
     try:
-        predictions = {}
-        for target in TARGET_PROPERTIES:
-            feature_row = build_feature_row(
-                target, feature_columns, grade, mfr, xs, c2
-            )
-            predictions[target] = models[target].predict(feature_row)[0]
+        predictions = predict_all(models, feature_columns, grade, mfr, xs, c2)
     except Exception as exc:
         st.error(f"Could not compute predictions: {exc}")
     else:
@@ -207,6 +130,12 @@ if st.button(
             "Predicted Flexural Modulus",
             f"{predictions['Flexural Modulus']:.0f} MPa"
         )
+
+        try:
+            log_prediction(PREDICTION_LOG_PATH, grade, mfr, xs, c2, predictions)
+        except Exception:
+            # Logging is best-effort only and must never break the UI.
+            pass
 
 st.divider()
 
