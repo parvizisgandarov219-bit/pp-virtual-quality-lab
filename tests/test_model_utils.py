@@ -25,6 +25,18 @@ def artifact():
     return model_utils.load_model_artifact(MODEL_PATH)
 
 
+def test_supported_grades_unchanged_by_refactor():
+    # Regression guard: SUPPORTED_GRADES was moved from an inline
+    # GRADE_OPTIONS list in app.py into model_utils.py (P3.1 batch
+    # prediction work). Content and order must be unchanged, since
+    # app.py's default selectbox index depends on this exact order.
+    assert model_utils.SUPPORTED_GRADES == [
+        "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
+        "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
+    ]
+    assert model_utils.SUPPORTED_GRADES[8] == "CB4848MO"
+
+
 def test_load_model_artifact_has_expected_shape(artifact):
     assert set(model_utils.TARGET_PROPERTIES) <= artifact["models"].keys()
     assert set(model_utils.TARGET_PROPERTIES) <= artifact["feature_columns"].keys()

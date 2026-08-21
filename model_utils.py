@@ -14,6 +14,43 @@ import pandas as pd
 
 TARGET_PROPERTIES = ["Izod Impact", "Tensile Modulus", "Flexural Modulus"]
 
+# Grades with a verified trained schema entry (Grade_<code> column present
+# for every target - see tests/test_model_utils.py). This is the single
+# source of truth for both the single-prediction dropdown and batch
+# validation, so they cannot drift apart.
+SUPPORTED_GRADES = [
+    "CA0900BM",
+    "CB0900MO",
+    "CB1248MO",
+    "CB1640MO",
+    "CB1849MO",
+    "CB3000GT",
+    "CB3648MO",
+    "CB4048MO",
+    "CB4848MO",
+    "CB6448MO",
+    "CB8248MO",
+]
+
+# Input bounds shared by the single-prediction form and batch validation.
+# These are generic, physically-reasonable PP process ranges, not ranges
+# statistically derived from the training data (the artifact carries no
+# per-feature training range metadata) - see README.
+MFR_BOUNDS = (0.0, 150.0)
+XS_BOUNDS = (0.0, 40.0)
+C2_BOUNDS = (0.0, 25.0)
+
+# Grade family logic for batch prediction (see batch_utils.py). Not derived
+# from or cross-checked against the grade code itself - this repo has no
+# verified Grade -> Family mapping, so family is taken as given by the
+# uploader via an optional "Grade Family" column.
+FAMILY_HOMO = "HOMO"
+FAMILY_RACO = "RACO"
+FAMILY_HECO = "HECO"
+FAMILY_ICP = "ICP"
+VALID_FAMILIES = {FAMILY_HOMO, FAMILY_RACO, FAMILY_HECO, FAMILY_ICP}
+FAMILIES_REQUIRING_C2 = {FAMILY_RACO, FAMILY_HECO, FAMILY_ICP}
+
 LOG_COLUMNS = [
     "timestamp_utc",
     "grade",

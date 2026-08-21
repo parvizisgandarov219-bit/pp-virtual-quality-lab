@@ -2,7 +2,22 @@ from pathlib import Path
 
 import streamlit as st
 
-from model_utils import load_model_artifact, log_prediction, predict_all
+from model_utils import (
+    C2_BOUNDS,
+    MFR_BOUNDS,
+    SUPPORTED_GRADES,
+    XS_BOUNDS,
+    load_model_artifact,
+    log_prediction,
+    predict_all,
+)
+from batch_utils import (
+    dataframe_to_csv_bytes,
+    dataframe_to_excel_bytes,
+    parse_uploaded_file,
+    summarize_batch_results,
+    validate_and_predict_batch,
+)
 
 st.set_page_config(
     page_title="PP Virtual Quality Lab",
@@ -26,19 +41,7 @@ def _load_cached_model_artifact(path: Path) -> dict:
     return load_model_artifact(path)
 
 
-GRADE_OPTIONS = [
-    "CA0900BM",
-    "CB0900MO",
-    "CB1248MO",
-    "CB1640MO",
-    "CB1849MO",
-    "CB3000GT",
-    "CB3648MO",
-    "CB4048MO",
-    "CB4848MO",
-    "CB6448MO",
-    "CB8248MO"
-]
+GRADE_OPTIONS = SUPPORTED_GRADES
 
 st.title("PP Virtual Quality Lab")
 
@@ -77,31 +80,31 @@ with left:
 with middle1:
     mfr = st.number_input(
         "MFR, g/10 min",
-        min_value=0.0,
-        max_value=150.0,
+        min_value=MFR_BOUNDS[0],
+        max_value=MFR_BOUNDS[1],
         value=48.0,
         step=0.1,
-        help="Typical PP melt flow rate range: 0-150 g/10 min."
+        help=f"Typical PP melt flow rate range: {MFR_BOUNDS[0]:g}-{MFR_BOUNDS[1]:g} g/10 min."
     )
 
 with middle2:
     xs = st.number_input(
         "XS, wt%",
-        min_value=0.0,
-        max_value=40.0,
+        min_value=XS_BOUNDS[0],
+        max_value=XS_BOUNDS[1],
         value=16.0,
         step=0.1,
-        help="Xylene solubles, typical range: 0-40 wt%."
+        help=f"Xylene solubles, typical range: {XS_BOUNDS[0]:g}-{XS_BOUNDS[1]:g} wt%."
     )
 
 with right:
     c2 = st.number_input(
         "C2, wt%",
-        min_value=0.0,
-        max_value=25.0,
+        min_value=C2_BOUNDS[0],
+        max_value=C2_BOUNDS[1],
         value=8.6,
         step=0.1,
-        help="Ethylene comonomer content, typical range: 0-25 wt%."
+        help=f"Ethylene comonomer content, typical range: {C2_BOUNDS[0]:g}-{C2_BOUNDS[1]:g} wt%."
     )
 
 if st.button(
@@ -152,3 +155,66 @@ st.warning(
     "Tensile and Flexural are early estimates and "
     "must not be used alone for product release."
 )
+
+st.divider()
+
+st.subheader("Batch Prediction")
+
+st.caption(
+    "Upload a CSV or Excel file with columns **Grade**, **MFR**, **XS**, "
+    "and **C2**. An optional **Grade Family** column (HOMO / RACO / HECO / "
+    "ICP) may be included - if present, HOMO rows may leave C2 blank "
+    "(it defaults to 0). Without a Grade Family column, C2 is required "
+    "for every row, same as the single prediction above."
+)
+
+uploaded_file = st.file_uploader(
+    "Upload batch file",
+    type=["csv", "xlsx"],
+    help="Grade must be one of the 11 grades supported above."
+)
+
+if uploaded_file is not None:
+    if st.button("Run Batch Predictions", type="primary"):
+        try:
+            input_df = parse_uploaded_file(uploaded_file.getvalue(), uploaded_file.name)
+        except Exception as exc:
+            st.error(f"Could not read uploaded file: {exc}")
+        else:
+            if input_df.empty:
+                st.warning("The uploaded file has no data rows.")
+            else:
+                try:
+                    result_df = validate_and_predict_batch(input_df, models, feature_columns)
+                except Exception as exc:
+                    st.error(f"Could not process batch file: {exc}")
+                else:
+                    summary = summarize_batch_results(result_df)
+                    st.success(
+                        f"Processed {summary['total']} row(s): "
+                        f"{summary['ok']} succeeded, {summary['errors']} failed validation."
+                    )
+                    if summary["errors"]:
+                        st.warning(
+                            f"{summary['errors']} row(s) failed validation - see the "
+                            "'Validation Status' / 'Validation Error' columns below. "
+                            "No prediction was computed for those rows."
+                        )
+
+                    st.dataframe(result_df, width="stretch")
+
+                    download_col1, download_col2 = st.columns(2)
+                    download_col1.download_button(
+                        "Download results (CSV)",
+                        data=dataframe_to_csv_bytes(result_df),
+                        file_name="pp_batch_predictions.csv",
+                        mime="text/csv",
+                        width="stretch",
+                    )
+                    download_col2.download_button(
+                        "Download results (Excel)",
+                        data=dataframe_to_excel_bytes(result_df),
+                        file_name="pp_batch_predictions.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                    )
