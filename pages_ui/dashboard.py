@@ -3,7 +3,7 @@
 import streamlit as st
 
 from model_utils import SUPPORTED_GRADES, TARGET_PROPERTIES
-from ui_components import PAGE_BATCH, PAGE_SINGLE, performance_tier
+from ui_components import PAGE_BATCH, PAGE_SINGLE, performance_tier, render_process_flow
 
 TOTAL_TRAINED_GRADES = 31
 
@@ -19,6 +19,8 @@ def render(artifact: dict) -> None:
         "Decision-support predictions only. Laboratory confirmation is "
         "required before product release."
     )
+
+    render_process_flow(artifact)
 
     status_col1, status_col2 = st.columns(2)
     with status_col1:

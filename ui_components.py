@@ -12,7 +12,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from model_utils import SUPPORTED_GRADES, load_model_artifact
+from model_utils import SUPPORTED_GRADES, TARGET_PROPERTIES, load_model_artifact
 
 APP_ROOT = Path(__file__).parent
 MODEL_PATH = APP_ROOT / "pp_virtual_lab_models .joblib"
@@ -177,12 +177,157 @@ table.pp-info-table td.mono { font-family: ui-monospace, "SF Mono", "Cascadia Mo
 
 .pp-io-table td.yes { color: var(--pp-ok); font-weight: 700; }
 .pp-io-table td.no { color: var(--pp-danger); font-weight: 700; }
+
+.pp-process-flow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
+.pp-process-step {
+    position: relative; flex: 1 1 152px; min-width: 148px; border: 1px solid var(--pp-line);
+    border-radius: 6px; padding: 12px 12px 10px; background: var(--pp-surface); cursor: pointer;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.pp-process-step:hover {
+    border-color: var(--pp-accent); box-shadow: 0 3px 10px rgba(14, 92, 115, 0.16); transform: translateY(-1px);
+}
+.pp-process-step.pp-you-are-here { border-top: 3px solid var(--pp-accent); }
+.pp-process-icon { font-size: 20px; line-height: 1; margin-bottom: 6px; }
+.pp-process-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pp-ink); }
+.pp-process-sub { font-size: 10px; font-weight: 600; color: var(--pp-accent); margin-top: 1px; text-transform: uppercase; letter-spacing: 0.03em; }
+.pp-process-detail { font-size: 11.5px; color: var(--pp-ink-muted); margin-top: 6px; line-height: 1.4; }
+.pp-process-arrow { display: flex; align-items: center; justify-content: center; color: var(--pp-accent); font-size: 18px; flex: 0 0 22px; }
+
+.pp-process-step[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
+    background: var(--pp-ink); color: var(--pp-surface); font-size: 11px; font-weight: 500;
+    text-transform: none; letter-spacing: normal;
+    padding: 8px 10px; border-radius: 6px; width: 210px; line-height: 1.4;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22); z-index: 30; pointer-events: none;
+}
 </style>
 """
 
 
 def inject_theme_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
+
+
+_PROCESS_FLOW_SHORT_TARGET = {
+    "Izod Impact": "Izod",
+    "Tensile Modulus": "Tensile",
+    "Flexural Modulus": "Flexural",
+}
+
+
+def _escape_attr(text: str) -> str:
+    return text.replace("&", "&amp;").replace('"', "&quot;")
+
+
+def render_process_flow(artifact: dict) -> None:
+    """Render the "Conceptual PP Quality Workflow" diagram on the Dashboard:
+    Feed -> Polymerization -> Batch -> Laboratory -> PP Virtual Lab (this
+    app) -> Quality Results.
+
+    This is a conceptual/symbolic illustration only - NOT a real P&ID and
+    NOT an exact representation of any specific plant, process, or
+    proprietary detail. It is purely decorative/informational: it
+    computes nothing, reads nothing back from user input, and has no
+    effect on any prediction. The R² values shown in the "PP Virtual Lab"
+    block are read live from the artifact (the same source as the
+    Dashboard's own Model Performance cards below) only so they can never
+    drift from the real numbers shown elsewhere on the page - this
+    function does not compute or alter them in any way.
+    """
+    metrics = artifact["metrics"]
+    r2_summary = " · ".join(
+        f"{_PROCESS_FLOW_SHORT_TARGET[target]} {metrics[target]['r2']:.3f}"
+        for target in TARGET_PROPERTIES
+    )
+
+    steps = [
+        {
+            "icon": "🛢️",
+            "title": "Feed",
+            "sub": "Raw materials",
+            "detail": "Propylene · Comonomer · H₂",
+            "tooltip": (
+                "Symbolic feed streams into the process - propylene, "
+                "comonomer, and hydrogen. Not an exact plant composition."
+            ),
+        },
+        {
+            "icon": "⚗️",
+            "title": "Polymerization",
+            "sub": "Reactor",
+            "detail": "Grade · MFR · XS · C2",
+            "tooltip": (
+                "Conceptual reactor stage where propylene is polymerized "
+                "into the target grade. Symbolic only - not a real P&ID."
+            ),
+        },
+        {
+            "icon": "📦",
+            "title": "Batch",
+            "sub": "Production",
+            "detail": "Production Date · Batch Number · Grade",
+            "tooltip": (
+                "Each reactor run becomes an identifiable production "
+                "batch, tracked by production date and batch number."
+            ),
+        },
+        {
+            "icon": "🔬",
+            "title": "Laboratory",
+            "sub": "Measurement",
+            "detail": "MFR · XS · C2",
+            "tooltip": (
+                "Laboratory measurements of MFR, XS, and C2 from a "
+                "physical sample taken from the batch."
+            ),
+        },
+        {
+            "icon": "🧪",
+            "title": "PP Virtual Lab",
+            "sub": "ML prediction engine",
+            "detail": f"✅ Loaded · R² {r2_summary}",
+            "tooltip": (
+                "This app - predicts Izod Impact, Tensile Modulus, and "
+                "Flexural Modulus from Grade, MFR, XS, and C2, using the "
+                "trained model."
+            ),
+            "highlight": True,
+        },
+        {
+            "icon": "📊",
+            "title": "Quality Results",
+            "sub": "Decision support",
+            "detail": "Izod Impact · Tensile Modulus · Flexural Modulus",
+            "tooltip": (
+                "Predicted properties for engineering decision support - "
+                "laboratory confirmation is still required before release."
+            ),
+        },
+    ]
+
+    st.markdown('<span class="pp-badge">Conceptual PP Quality Workflow</span>', unsafe_allow_html=True)
+
+    parts = []
+    for i, step in enumerate(steps):
+        if i > 0:
+            parts.append('<div class="pp-process-arrow">&#8594;</div>')
+        css_class = "pp-process-step pp-you-are-here" if step.get("highlight") else "pp-process-step"
+        tooltip = _escape_attr(step["tooltip"])
+        parts.append(
+            f'<div class="{css_class}" data-tooltip="{tooltip}">'
+            f'<div class="pp-process-icon">{step["icon"]}</div>'
+            f'<div class="pp-process-title">{step["title"]}</div>'
+            f'<div class="pp-process-sub">{step["sub"]}</div>'
+            f'<div class="pp-process-detail">{step["detail"]}</div>'
+            f"</div>"
+        )
+    st.markdown(f'<div class="pp-process-flow">{"".join(parts)}</div>', unsafe_allow_html=True)
+    st.caption(
+        "Symbolic representation — not a plant P&ID. Process → Sample → "
+        "Lab → AI Prediction → Quality."
+    )
 
 
 def render_sidebar(models_loaded: bool) -> None:

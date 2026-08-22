@@ -40,6 +40,38 @@ def test_dashboard_is_default_page_and_shows_performance_cards(at):
     assert any("13 of 31 trained grades exposed" in c.value for c in at.sidebar.caption)
 
 
+def test_dashboard_process_flow_diagram_renders_all_blocks(at):
+    badges = [m.value for m in at.markdown if "pp-badge" in m.value]
+    assert any("Conceptual PP Quality Workflow" in b for b in badges)
+
+    flow_html = " ".join(m.value for m in at.markdown if "pp-process-flow" in m.value)
+    for title in ["Feed", "Polymerization", "Batch", "Laboratory", "PP Virtual Lab", "Quality Results"]:
+        assert title in flow_html
+    # detail lines from the spec are present
+    assert "Propylene" in flow_html and "Comonomer" in flow_html
+    assert "Grade · MFR · XS · C2" in flow_html
+    assert "Production Date" in flow_html and "Batch Number" in flow_html
+    assert "Izod Impact" in flow_html and "Tensile Modulus" in flow_html and "Flexural Modulus" in flow_html
+    # live R² values (not hardcoded) appear in the PP Virtual Lab block
+    assert "0.974" in flow_html and "0.574" in flow_html and "0.599" in flow_html
+    assert "✅ Loaded" in flow_html
+    # hover tooltips are present as data-tooltip attributes, one per block
+    assert flow_html.count("data-tooltip=") == 6
+    # the "you are here" block is visually distinguished
+    assert "pp-you-are-here" in flow_html
+
+    caption_texts = [c.value for c in at.caption]
+    assert any("Symbolic representation" in t and "P&ID" in t for t in caption_texts)
+    assert any("Process" in t and "AI Prediction" in t and "Quality" in t for t in caption_texts)
+
+
+def test_dashboard_process_flow_does_not_break_model_performance_cards(at):
+    # The new diagram must not push out or interfere with the existing
+    # Model Performance section below it.
+    joined = " ".join(m.value for m in at.markdown if "pp-card-value" in m.value)
+    assert "0.974" in joined and "0.574" in joined and "0.599" in joined
+
+
 def test_dashboard_quick_action_navigates_to_single(at):
     at.button(key="dash_go_single").click().run()
     assert at.session_state["active_page"] == "single"
