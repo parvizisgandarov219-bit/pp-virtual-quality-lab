@@ -16,13 +16,22 @@ TARGET_PROPERTIES = ["Izod Impact", "Tensile Modulus", "Flexural Modulus"]
 
 # Grades with a verified trained schema entry (Grade_<code> column present
 # for every target - see tests/test_model_utils.py). This is the single
-# source of truth for both the single-prediction dropdown and batch
-# validation, so they cannot drift apart.
+# source of truth for the Single Prediction dropdown (and the Dashboard /
+# Model Information grade displays, which read this same list).
 #
-# HB3500GP (HOMO) and RB4545MO (RACO) are appended after the original 11
-# HECO grades, rather than inserted alphabetically, specifically so the
-# original grades keep their original list positions - app.py's default
-# selectbox index (8 = CB4848MO) depends on that order being stable.
+# Widened to every real trained grade whose Grade Family is derivable
+# (H -> HOMO, R -> RACO, C -> HECO): all 31 trained grades minus the 3
+# "PP*"-prefixed ones, which have no defined family mapping and are
+# deliberately excluded (see derive_grade_family / GRADE_FAMILY_PREFIX_MAP).
+# Batch Prediction and Model Validation no longer read this constant at
+# all - they use trained_grades() directly against the real artifact, so
+# they already recognized every one of these grades (and the excluded
+# PP* grades too, which they still process, just isolating them as
+# row-level errors since no family can be derived for them).
+#
+# The original 13 grades keep their original list positions (appended
+# to, not reordered) so app.py's default selectbox index (8 = CB4848MO)
+# keeps depending on stable, unchanged positions.
 SUPPORTED_GRADES = [
     "CA0900BM",
     "CB0900MO",
@@ -37,6 +46,21 @@ SUPPORTED_GRADES = [
     "CB8248MO",
     "HB3500GP",
     "RB4545MO",
+    "CA0342EX",
+    "CB0120BM",
+    "CB0645CM",
+    "CB1449MO",
+    "HB0356FR",
+    "HB0500GT",
+    "HB4500GP",
+    "HB5502MO",
+    "HB6500GP",
+    "HB6540MO",
+    "RA0242EX",
+    "RA0342EX",
+    "RB3545MO",
+    "RB6545MO",
+    "RB8545MO",
 ]
 
 # Input bounds shared by the single-prediction form and batch validation.

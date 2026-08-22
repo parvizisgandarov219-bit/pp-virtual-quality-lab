@@ -101,9 +101,15 @@ def test_unsupported_grade_is_row_level_error_not_a_crash(models, feature_column
     assert "Unsupported grade" in result.loc[0, validation_utils.ERROR_COLUMN]
 
 
-def test_batch_accepts_trained_grade_outside_supported_grades(models, feature_columns):
+def test_validation_uses_trained_grades_not_supported_grades(models, feature_columns):
+    # Model Validation's grade allowlist is model_utils.trained_grades(),
+    # same as Batch Prediction - not the (now widened) SUPPORTED_GRADES
+    # UI list. CA0342EX is in SUPPORTED_GRADES today too, so this mainly
+    # confirms it still works; the real proof that trained_grades() (not
+    # SUPPORTED_GRADES) is the check is test_unsupported_grade_is_row_level_error_not_a_crash
+    # plus batch_utils' PP0102TR family-prefix test (same shared logic).
     grade = "CA0342EX"
-    assert grade not in model_utils.SUPPORTED_GRADES
+    assert grade in model_utils.trained_grades(feature_columns)
     df = _lab_df(grade=grade)
     result = validation_utils.validate_and_score_batch(df, models, feature_columns)
     assert result.loc[0, validation_utils.STATUS_COLUMN] == validation_utils.STATUS_OK

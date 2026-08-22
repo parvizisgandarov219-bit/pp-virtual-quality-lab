@@ -15,6 +15,13 @@ VALID_GRADE_1 = "CB4848MO"
 VALID_GRADE_2 = "CA0900BM"
 UNTRAINED_GRADE = "CB2000GT"
 
+# Referenced via batch_utils.PREDICTION_COLUMN_NAMES (not hardcoded here)
+# so these tests can't silently drift from the real output column names,
+# which now carry unit suffixes - e.g. "Predicted Izod Impact (kJ/m²)".
+IZOD_COL = batch_utils.PREDICTION_COLUMN_NAMES["Izod Impact"]
+TENSILE_COL = batch_utils.PREDICTION_COLUMN_NAMES["Tensile Modulus"]
+FLEXURAL_COL = batch_utils.PREDICTION_COLUMN_NAMES["Flexural Modulus"]
+
 
 @pytest.fixture(scope="module")
 def artifact():
@@ -80,6 +87,17 @@ def test_detect_column_mapping_recognizes_variants(header, expected_canonical):
     assert mapping[expected_canonical] == header
 
 
+def test_prediction_column_names_include_units():
+    # Locks in the exact output column header text: unit suffixes must
+    # be present so the exported CSV/Excel file is self-describing.
+    # Units match model_utils.IZOD_IMPACT_UNIT / the "MPa" labels already
+    # shown on Single Prediction's result cards - display text only,
+    # never a conversion of the predicted value.
+    assert IZOD_COL == "Predicted Izod Impact (kJ/m²)"
+    assert TENSILE_COL == "Predicted Tensile Modulus (MPa)"
+    assert FLEXURAL_COL == "Predicted Flexural Modulus (MPa)"
+
+
 def test_validate_and_predict_batch_raises_for_missing_required_columns(models, feature_columns):
     df = pd.DataFrame({"Grade": ["CB4848MO"], "MFR": [48.0]})  # XS missing
     with pytest.raises(ValueError, match="Missing required column"):
@@ -102,9 +120,9 @@ def test_all_valid_rows_produce_predictions_matching_predict_all(models, feature
 
     expected_1 = model_utils.predict_all(models, feature_columns, VALID_GRADE_1, 48.0, 16.0, 8.6)
     expected_2 = model_utils.predict_all(models, feature_columns, VALID_GRADE_2, 12.5, 4.2, 1.1)
-    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected_1["Izod Impact"])
-    assert result.loc[0, "Predicted Tensile Modulus"] == pytest.approx(expected_1["Tensile Modulus"])
-    assert result.loc[1, "Predicted Flexural Modulus"] == pytest.approx(expected_2["Flexural Modulus"])
+    assert result.loc[0, IZOD_COL] == pytest.approx(expected_1["Izod Impact"])
+    assert result.loc[0, TENSILE_COL] == pytest.approx(expected_1["Tensile Modulus"])
+    assert result.loc[1, FLEXURAL_COL] == pytest.approx(expected_2["Flexural Modulus"])
 
 
 def test_original_columns_preserved_and_new_columns_appended(models, feature_columns):
@@ -121,7 +139,7 @@ def test_original_columns_preserved_and_new_columns_appended(models, feature_col
     assert result.loc[0, "Batch ID"] == "A1"
     assert result.loc[0, "Notes"] == "sample note"
     expected_new_columns = [
-        "Predicted Izod Impact", "Predicted Tensile Modulus", "Predicted Flexural Modulus",
+        IZOD_COL, TENSILE_COL, FLEXURAL_COL,
         batch_utils.STATUS_COLUMN, batch_utils.ERROR_COLUMN,
     ]
     assert list(result.columns) == list(df.columns) + expected_new_columns
@@ -169,7 +187,7 @@ def test_production_date_and_batch_number_do_not_affect_predictions(models, feat
     result_b = batch_utils.validate_and_predict_batch(df_b, models, feature_columns)
 
     for column in [
-        "Predicted Izod Impact", "Predicted Tensile Modulus", "Predicted Flexural Modulus",
+        IZOD_COL, TENSILE_COL, FLEXURAL_COL,
     ]:
         assert result_a.loc[0, column] == pytest.approx(result_b.loc[0, column])
 
@@ -185,33 +203,43 @@ def test_unsupported_grade_row_is_isolated_error(models, feature_columns):
 
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
     assert "Unsupported grade" in result.loc[0, batch_utils.ERROR_COLUMN]
-    assert pd.isna(result.loc[0, "Predicted Izod Impact"])
+    assert pd.isna(result.loc[0, IZOD_COL])
 
     # the other row is unaffected
     assert result.loc[1, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
-    assert not pd.isna(result.loc[1, "Predicted Izod Impact"])
+    assert not pd.isna(result.loc[1, IZOD_COL])
 
 
-# --- Batch accepts every real trained grade, not just SUPPORTED_GRADES ----
+# --- Batch's grade allowlist is trained_grades(), not SUPPORTED_GRADES ---
 #
 # Batch Prediction's grade allowlist is model_utils.trained_grades(), the
-# model's real 31-grade schema - deliberately wider than the 13-grade
-# SUPPORTED_GRADES UI allowlist used by Single Prediction. These grades
-# are drawn from the model's real trained schema but are NOT in
-# SUPPORTED_GRADES, confirming batch doesn't wrongly narrow to that list.
+# model's real 31-grade schema. SUPPORTED_GRADES (the Single Prediction
+# dropdown) now contains every H/R/C trained grade too - the two lists
+# coincide there - so the distinguishing case is the 3 PP*-prefixed
+# grades: trained_grades() includes them (batch doesn't reject them as
+# "unsupported"), but SUPPORTED_GRADES excludes them (no derivable
+# family) - see test_batch_rejects_grade_with_unrecognized_family_prefix
+# below, which proves exactly that via PP0102TR's error message.
 
-@pytest.mark.parametrize("grade,family", [
-    ("CA0342EX", "HECO"),   # trained HECO grade absent from SUPPORTED_GRADES
-    ("HB0356FR", "HOMO"),   # trained HOMO grade absent from SUPPORTED_GRADES
-    ("RA0342EX", "RACO"),   # trained RACO grade absent from SUPPORTED_GRADES
-])
-def test_batch_accepts_trained_grades_outside_supported_grades(models, feature_columns, grade, family):
-    assert grade not in model_utils.SUPPORTED_GRADES
-    c2 = 0.0 if family == "HOMO" else 8.6
-    df = pd.DataFrame({"Grade": [grade], "MFR": [48.0], "XS": [16.0], "C2": [c2]})
+def test_batch_accepts_every_hrc_trained_grade(models, feature_columns):
+    # Every H/R/C trained grade - the same set now exposed in Single
+    # Prediction's SUPPORTED_GRADES - must process successfully via
+    # Batch Prediction's independent trained_grades()-based check too.
+    hrc_grades = [g for g in model_utils.trained_grades(feature_columns) if g[0] in ("H", "R", "C")]
+    assert set(hrc_grades) == set(model_utils.SUPPORTED_GRADES)
+
+    rows = []
+    for grade in hrc_grades:
+        family = model_utils.derive_grade_family(grade)
+        c2 = 0.0 if family == model_utils.FAMILY_HOMO else 8.6
+        rows.append({"Grade": grade, "MFR": 48.0, "XS": 16.0, "C2": c2})
+    df = pd.DataFrame(rows)
+
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
-    assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK, result.loc[0, batch_utils.ERROR_COLUMN]
-    assert not pd.isna(result.loc[0, "Predicted Izod Impact"])
+    assert (result[batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK).all(), result[
+        [batch_utils.STATUS_COLUMN, batch_utils.ERROR_COLUMN]
+    ]
+    assert not result[IZOD_COL].isna().any()
 
 
 def test_batch_rejects_grade_with_unrecognized_family_prefix_as_row_level_error(models, feature_columns):
@@ -230,7 +258,7 @@ def test_batch_rejects_grade_with_unrecognized_family_prefix_as_row_level_error(
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
     assert "starts with" in result.loc[0, batch_utils.ERROR_COLUMN]
-    assert pd.isna(result.loc[0, "Predicted Izod Impact"])
+    assert pd.isna(result.loc[0, IZOD_COL])
     # the rest of the batch is unaffected
     assert result.loc[1, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
 
@@ -336,7 +364,7 @@ def test_supplied_family_conflicting_with_grade_prefix_is_error(models, feature_
     result = batch_utils.validate_and_predict_batch(df, models, feature_columns)
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_ERROR
     assert "does not match grade" in result.loc[0, batch_utils.ERROR_COLUMN]
-    assert pd.isna(result.loc[0, "Predicted Izod Impact"])
+    assert pd.isna(result.loc[0, IZOD_COL])
 
 
 def test_invalid_family_value_is_error(models, feature_columns):
@@ -356,7 +384,7 @@ def test_homo_grade_blank_c2_defaults_to_zero(models, feature_columns):
 
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
     expected = model_utils.predict_all(models, feature_columns, homo_grade, 48.0, 16.0, 0.0)
-    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
+    assert result.loc[0, IZOD_COL] == pytest.approx(expected["Izod Impact"])
 
 
 def test_homo_grade_explicit_c2_uses_given_value(models, feature_columns):
@@ -366,7 +394,7 @@ def test_homo_grade_explicit_c2_uses_given_value(models, feature_columns):
 
     assert result.loc[0, batch_utils.STATUS_COLUMN] == batch_utils.STATUS_OK
     expected = model_utils.predict_all(models, feature_columns, homo_grade, 48.0, 16.0, 2.0)
-    assert result.loc[0, "Predicted Izod Impact"] == pytest.approx(expected["Izod Impact"])
+    assert result.loc[0, IZOD_COL] == pytest.approx(expected["Izod Impact"])
 
 
 def test_homo_grade_family_mismatch_is_still_an_error(models, feature_columns):

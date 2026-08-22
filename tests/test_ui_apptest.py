@@ -37,7 +37,7 @@ def test_dashboard_is_default_page_and_shows_performance_cards(at):
     assert "0.574" in joined  # Tensile Modulus R²
     assert "0.599" in joined  # Flexural Modulus R²
 
-    assert any("13 of 31 trained grades exposed" in c.value for c in at.sidebar.caption)
+    assert any("28 of 31 trained grades exposed" in c.value for c in at.sidebar.caption)
 
 
 def test_dashboard_process_flow_diagram_renders_all_blocks(at):
@@ -80,7 +80,7 @@ def test_dashboard_quick_action_navigates_to_single(at):
 def test_dashboard_shows_model_status_and_grade_count(at):
     values = " ".join(m.value for m in at.markdown if "pp-card-value" in m.value)
     assert "Loaded" in values
-    assert "13" in values and "of 31 trained" in values
+    assert "28" in values and "of 31 trained" in values
 
 
 # --- Model Information -------------------------------------------------------
@@ -264,17 +264,21 @@ BATCH_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Grade Family
 """
 
 
-def test_batch_prediction_accepts_trained_grade_outside_supported_grades(at):
-    # CA0342EX is a real trained grade (model_utils.trained_grades()) but
-    # is NOT in SUPPORTED_GRADES (the narrower Single Prediction dropdown)
-    # - Batch Prediction must still accept it end-to-end through the app.
+def test_batch_prediction_accepts_a_real_trained_grade_via_the_app(at):
+    # CA0342EX is a real trained grade, now also included in the widened
+    # SUPPORTED_GRADES (Single Prediction dropdown) - but Batch
+    # Prediction validates independently via trained_grades(), not
+    # SUPPORTED_GRADES (see tests/test_batch_utils.py for the case that
+    # actually distinguishes the two: PP0102TR, trained but excluded
+    # from SUPPORTED_GRADES). This confirms the app-level upload path
+    # still works end-to-end for it.
     _nav_button(at, "nav_batch").click().run()
 
     csv_bytes = (
         "Grade,MFR,XS,C2\nCA0342EX,48.0,16.0,8.6\n"
     ).encode("utf-8")
     uploader = at.get("file_uploader")[0]
-    uploader.upload("outside_supported.csv", csv_bytes, "text/csv")
+    uploader.upload("widened_grade.csv", csv_bytes, "text/csv")
     at.run()
 
     run_button = next(b for b in at.button if b.label == "Run Batch Predictions")

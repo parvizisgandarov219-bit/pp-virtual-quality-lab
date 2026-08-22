@@ -26,18 +26,36 @@ def artifact():
 
 
 def test_supported_grades_content_and_order():
-    # Regression guard: the original 11 HECO grades must keep their
-    # original list positions - the Single Prediction page's default
-    # selectbox index (8 = CB4848MO) depends on this exact order.
-    # HB3500GP (HOMO) and RB4545MO (RACO) were appended afterward, once
-    # verified present in the real model schema (see
-    # test_derive_grade_family_by_prefix and test_batch_utils.py).
-    assert model_utils.SUPPORTED_GRADES == [
+    # Regression guard: the original 13 grades must keep their original
+    # list positions - the Single Prediction page's default selectbox
+    # index (8 = CB4848MO) depends on this exact order. All later
+    # additions are appended, never inserted/reordered.
+    assert model_utils.SUPPORTED_GRADES[:13] == [
         "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
         "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
         "HB3500GP", "RB4545MO",
     ]
     assert model_utils.SUPPORTED_GRADES[8] == "CB4848MO"
+
+
+def test_supported_grades_is_every_hrc_trained_grade_excluding_pp(artifact):
+    # SUPPORTED_GRADES (the Single Prediction dropdown) must contain
+    # exactly every trained grade with a derivable Grade Family - i.e.
+    # all H/R/C trained grades - and nothing else. The 3 PP*-prefixed
+    # trained grades have no defined family mapping and must be excluded.
+    feature_columns = artifact["feature_columns"]
+    trained = model_utils.trained_grades(feature_columns)
+    expected = {g for g in trained if g[0] in ("H", "R", "C")}
+
+    assert set(model_utils.SUPPORTED_GRADES) == expected
+    assert len(model_utils.SUPPORTED_GRADES) == len(set(model_utils.SUPPORTED_GRADES)), "duplicates"
+    assert not any(g.startswith("P") for g in model_utils.SUPPORTED_GRADES)
+    # confirm every excluded PP* grade really is trained but unmapped
+    excluded = set(trained) - expected
+    assert excluded == {"PP0102TR", "PP2002TR", "PP6003TR"}
+    for grade in excluded:
+        with pytest.raises(ValueError, match="starts with"):
+            model_utils.derive_grade_family(grade)
 
 
 def test_supported_grades_have_a_matching_trained_column_for_every_target(artifact):
@@ -147,11 +165,7 @@ def test_predict_all_raises_for_untrained_grade(artifact):
         )
 
 
-@pytest.mark.parametrize("grade", [
-    "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
-    "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
-    "HB3500GP", "RB4545MO",
-])
+@pytest.mark.parametrize("grade", model_utils.SUPPORTED_GRADES)
 def test_predict_all_works_for_every_ui_grade(artifact, grade):
     predictions = model_utils.predict_all(
         artifact["models"], artifact["feature_columns"], grade, 48.0, 16.0, 8.6

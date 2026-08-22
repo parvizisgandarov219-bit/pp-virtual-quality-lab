@@ -24,6 +24,7 @@ import pandas as pd
 from model_utils import (
     C2_BOUNDS,
     FAMILY_HOMO,
+    IZOD_IMPACT_UNIT,
     MFR_BOUNDS,
     TARGET_PROPERTIES,
     XS_BOUNDS,
@@ -33,10 +34,14 @@ from model_utils import (
     trained_grades,
 )
 
+# Unit suffixes match the units already shown elsewhere in the app (see
+# model_utils.IZOD_IMPACT_UNIT and the "MPa" labels on Single Prediction's
+# result cards) - purely a display label on the output column header,
+# never a conversion or change to the predicted value itself.
 PREDICTION_COLUMN_NAMES = {
-    "Izod Impact": "Predicted Izod Impact",
-    "Tensile Modulus": "Predicted Tensile Modulus",
-    "Flexural Modulus": "Predicted Flexural Modulus",
+    "Izod Impact": f"Predicted Izod Impact ({IZOD_IMPACT_UNIT})",
+    "Tensile Modulus": "Predicted Tensile Modulus (MPa)",
+    "Flexural Modulus": "Predicted Flexural Modulus (MPa)",
 }
 STATUS_COLUMN = "Validation Status"
 ERROR_COLUMN = "Validation Error"
