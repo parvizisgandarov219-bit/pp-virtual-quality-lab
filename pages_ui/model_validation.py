@@ -13,7 +13,10 @@ import streamlit as st
 
 from batch_utils import dataframe_to_csv_bytes, dataframe_to_excel_bytes, parse_uploaded_file
 from model_utils import TARGET_PROPERTIES
+from ui_components import LAB_ARCHIVE_PATH
 from validation_utils import (
+    append_validated_rows_to_archive,
+    build_predicted_vs_actual_chart_data,
     compute_validation_metrics,
     summarize_validation_results,
     validate_and_score_batch,
@@ -78,25 +81,40 @@ def render(artifact: dict) -> None:
     )
 
     if uploaded_file is None:
+        st.session_state.pop("validation_result_df", None)
+        st.session_state.pop("validation_source_file_id", None)
         return
 
-    if not st.button("Run Validation", type="primary"):
-        return
+    # Identifies which uploaded file the stored result (if any) belongs
+    # to, so results persist across reruns triggered by the OTHER button
+    # on this page ("Save to training archive") without going stale if
+    # the user has since picked a different file but not re-run it.
+    file_id = (uploaded_file.name, uploaded_file.size)
 
-    try:
-        input_df = parse_uploaded_file(uploaded_file.getvalue(), uploaded_file.name)
-    except Exception as exc:
-        st.error(f"Could not read uploaded file: {exc}")
-        return
+    if st.button("Run Validation", type="primary"):
+        try:
+            input_df = parse_uploaded_file(uploaded_file.getvalue(), uploaded_file.name)
+        except Exception as exc:
+            st.error(f"Could not read uploaded file: {exc}")
+            return
 
-    if input_df.empty:
-        st.warning("The uploaded file has no data rows.")
-        return
+        if input_df.empty:
+            st.warning("The uploaded file has no data rows.")
+            return
 
-    try:
-        result_df = validate_and_score_batch(input_df, models, feature_columns)
-    except Exception as exc:
-        st.error(f"Could not process validation file: {exc}")
+        try:
+            result_df = validate_and_score_batch(input_df, models, feature_columns)
+        except Exception as exc:
+            st.error(f"Could not process validation file: {exc}")
+            return
+
+        st.session_state["validation_result_df"] = result_df
+        st.session_state["validation_source_file_id"] = file_id
+
+    if st.session_state.get("validation_source_file_id") != file_id:
+        return
+    result_df = st.session_state.get("validation_result_df")
+    if result_df is None:
         return
 
     summary = summarize_validation_results(result_df)
@@ -155,11 +173,52 @@ def render(artifact: dict) -> None:
         "undefined in both cases)."
     )
 
+    st.subheader("Predicted vs. Actual")
+    st.caption(
+        "Each point is one scored row. Closer to the diagonal "
+        "(Predicted ≈ Actual) means a more accurate prediction for that "
+        "row."
+    )
+    chart_data = build_predicted_vs_actual_chart_data(result_df)
+    chart_cols = st.columns(len(TARGET_PROPERTIES))
+    for col, target in zip(chart_cols, TARGET_PROPERTIES):
+        with col:
+            st.markdown(f"**{target}**")
+            chart_df = chart_data[target]
+            if chart_df.empty:
+                st.caption("No scored rows to plot.")
+            else:
+                st.scatter_chart(chart_df, x="Predicted", y="Actual", height=220)
+
     try:
         styled = result_df.style.apply(_highlight_status, axis=1)
         st.dataframe(styled, width="stretch")
     except Exception:
         st.dataframe(result_df, width="stretch")
+
+    with st.container(border=True):
+        st.markdown("**Save to training archive**")
+        st.caption(
+            "Appends the successfully-scored row(s) above to a local "
+            "archive of validated lab data - candidate data for a "
+            "future, human-approved model retraining (see Model "
+            "Improvement). This never retrains or changes the deployed "
+            "model; it only saves data. Click again after each new "
+            "upload you want to keep - nothing is saved automatically."
+        )
+        if st.button("Save to training archive", key="save_to_archive"):
+            if summary["ok"] == 0:
+                st.warning("No successfully validated rows to save.")
+            else:
+                try:
+                    saved = append_validated_rows_to_archive(LAB_ARCHIVE_PATH, result_df)
+                except Exception as exc:
+                    st.error(f"Could not save to the training archive: {exc}")
+                else:
+                    st.success(
+                        f"Saved {saved} row(s) to the training data archive. "
+                        "See Model Improvement for the accumulated total."
+                    )
 
     download_col1, download_col2 = st.columns(2)
     download_col1.download_button(

@@ -14,6 +14,11 @@ env/
 # Local prediction audit log (see README - not meant to be committed)
 predictions_log.csv
 
+# Local accumulated lab-data archive (see validation_utils.py - not
+# meant to be committed; candidate future training data, not the
+# actual training data or model artifact)
+lab_validation_archive.csv
+
 # Editor / OS cruft
 .vscode/
 .idea/

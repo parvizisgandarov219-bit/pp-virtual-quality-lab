@@ -20,6 +20,11 @@ MODEL_PATH = APP_ROOT / "pp_virtual_lab_models .joblib"
 # Community Cloud the filesystem is ephemeral, so this file will not
 # survive an app restart/redeploy there - see README for details.
 PREDICTION_LOG_PATH = APP_ROOT / "predictions_log.csv"
+# Accumulated, validated lab data saved from Model Validation - candidate
+# future training data (see validation_utils.py / model_improvement.py).
+# Never read by any prediction path and never used to alter the deployed
+# model - same ephemeral-filesystem caveat as PREDICTION_LOG_PATH above.
+LAB_ARCHIVE_PATH = APP_ROOT / "lab_validation_archive.csv"
 
 PAGE_ICON = "🧪"
 PAGE_TITLE = "PP Virtual Lab"
@@ -35,12 +40,14 @@ PAGE_SINGLE = "single"
 PAGE_BATCH = "batch"
 PAGE_MODEL_INFO = "model_info"
 PAGE_VALIDATION = "validation"
+PAGE_MODEL_IMPROVEMENT = "model_improvement"
 NAV_ITEMS = [
     (PAGE_DASHBOARD, "Dashboard"),
     (PAGE_SINGLE, "Single Prediction"),
     (PAGE_BATCH, "Batch Prediction"),
     (PAGE_MODEL_INFO, "Model Information"),
     (PAGE_VALIDATION, "Model Validation"),
+    (PAGE_MODEL_IMPROVEMENT, "Model Improvement"),
 ]
 
 

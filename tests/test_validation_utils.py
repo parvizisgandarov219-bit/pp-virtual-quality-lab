@@ -251,3 +251,158 @@ def test_dataframe_to_csv_and_excel_helpers_are_reused_from_batch_utils():
     import batch_utils
     df = pd.DataFrame({"a": [1], "b": ["x"]})
     assert batch_utils.dataframe_to_csv_bytes(df) == batch_utils.dataframe_to_csv_bytes(df)
+
+
+# --- Predicted vs. Actual chart data ------------------------------------------
+
+def test_build_predicted_vs_actual_chart_data_matches_real_predictions(models, feature_columns):
+    df = pd.concat([_lab_df(grade=VALID_GRADE_1), _lab_df(grade=UNTRAINED_GRADE)], ignore_index=True)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+
+    charts = validation_utils.build_predicted_vs_actual_chart_data(result)
+    assert set(charts.keys()) == set(model_utils.TARGET_PROPERTIES)
+
+    izod = charts["Izod Impact"]
+    assert list(izod.columns) == ["Predicted", "Actual"]
+    # only the OK row (VALID_GRADE_1) is included - the ERROR row is excluded
+    assert len(izod) == 1
+    expected = model_utils.predict_all(models, feature_columns, VALID_GRADE_1, 48.0, 16.0, 8.6)
+    assert izod.iloc[0]["Predicted"] == pytest.approx(expected["Izod Impact"])
+    assert izod.iloc[0]["Actual"] == pytest.approx(7.5)
+
+
+def test_build_predicted_vs_actual_chart_data_empty_when_no_ok_rows(models, feature_columns):
+    df = _lab_df(grade=UNTRAINED_GRADE)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+    charts = validation_utils.build_predicted_vs_actual_chart_data(result)
+    for target in model_utils.TARGET_PROPERTIES:
+        assert charts[target].empty
+
+
+# --- Accumulating validated lab data for future model improvement ------------
+#
+# This never touches models, feature_columns, or the .joblib artifact -
+# every function under test here only reads/writes a plain local CSV.
+
+def test_append_validated_rows_to_archive_saves_only_ok_rows(tmp_path, models, feature_columns):
+    archive_path = tmp_path / "archive.csv"
+    df = pd.concat([_lab_df(grade=VALID_GRADE_1), _lab_df(grade=UNTRAINED_GRADE)], ignore_index=True)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+
+    saved = validation_utils.append_validated_rows_to_archive(archive_path, result)
+    assert saved == 1
+    assert archive_path.exists()
+
+    archived = pd.read_csv(archive_path)
+    assert len(archived) == 1
+    assert list(archived.columns) == validation_utils.LAB_ARCHIVE_COLUMNS
+    assert archived.iloc[0]["Grade"] == VALID_GRADE_1
+    assert archived.iloc[0]["Production Date"] == "2026-08-17"
+    assert archived.iloc[0]["Batch Number"] == "B-2026-0817-01"
+
+
+def test_append_validated_rows_to_archive_returns_zero_and_creates_no_file_when_nothing_ok(
+    tmp_path, models, feature_columns
+):
+    archive_path = tmp_path / "archive.csv"
+    df = _lab_df(grade=UNTRAINED_GRADE)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+
+    saved = validation_utils.append_validated_rows_to_archive(archive_path, result)
+    assert saved == 0
+    assert not archive_path.exists()
+
+
+def test_append_validated_rows_to_archive_accumulates_across_calls_without_duplicating_header(
+    tmp_path, models, feature_columns
+):
+    archive_path = tmp_path / "archive.csv"
+    df1 = _lab_df(grade=VALID_GRADE_1)
+    df2 = _lab_df(grade=HOMO_GRADE, c2=None)
+
+    result1 = validation_utils.validate_and_score_batch(df1, models, feature_columns)
+    result2 = validation_utils.validate_and_score_batch(df2, models, feature_columns)
+
+    validation_utils.append_validated_rows_to_archive(archive_path, result1)
+    validation_utils.append_validated_rows_to_archive(archive_path, result2)
+
+    archived = pd.read_csv(archive_path)
+    assert len(archived) == 2
+    assert list(archived["Grade"]) == [VALID_GRADE_1, HOMO_GRADE]
+    # only one header line in the raw file
+    raw_lines = archive_path.read_text(encoding="utf-8").strip().split("\n")
+    assert raw_lines[0].startswith("Production Date,")
+    assert sum(1 for line in raw_lines if line.startswith("Production Date,")) == 1
+
+
+def test_append_validated_rows_to_archive_normalizes_header_spelling(models, feature_columns, tmp_path):
+    # The uploaded file's own header spelling (e.g. "MFR, g/10 min") must
+    # not leak into the archive - every append must produce the same
+    # fixed LAB_ARCHIVE_COLUMNS schema, so repeated appends from
+    # differently-spelled uploads never misalign columns.
+    archive_path = tmp_path / "archive.csv"
+    df = pd.DataFrame({
+        "Production Date": ["2026-08-17"], "Batch Number": ["B1"],
+        "grade": [VALID_GRADE_1], "MFR, g/10 min": [48.0], "XS, wt%": [16.0], "C2, wt%": [8.6],
+        "Izod Impact": [7.5], "Tensile Modulus": [1380.0], "Flexural Modulus": [1390.0],
+    })
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+    assert result.loc[0, validation_utils.STATUS_COLUMN] == validation_utils.STATUS_OK
+
+    saved = validation_utils.append_validated_rows_to_archive(archive_path, result)
+    assert saved == 1
+    archived = pd.read_csv(archive_path)
+    assert list(archived.columns) == validation_utils.LAB_ARCHIVE_COLUMNS
+    assert archived.iloc[0]["MFR"] == 48.0
+    assert archived.iloc[0]["Grade"] == VALID_GRADE_1
+
+
+def test_append_validated_rows_to_archive_never_touches_models_or_feature_columns(
+    tmp_path, models, feature_columns
+):
+    # append_validated_rows_to_archive's signature doesn't even accept
+    # models/feature_columns/the artifact - this locks in that the real
+    # model objects' identity is unaffected by calling it.
+    model_ids_before = {target: id(model) for target, model in models.items()}
+    feature_columns_before = {k: list(v) for k, v in feature_columns.items()}
+
+    df = _lab_df(grade=VALID_GRADE_1)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+    validation_utils.append_validated_rows_to_archive(tmp_path / "archive.csv", result)
+
+    assert {target: id(model) for target, model in models.items()} == model_ids_before
+    assert {k: list(v) for k, v in feature_columns.items()} == feature_columns_before
+
+
+def test_read_lab_archive_returns_empty_dataframe_when_file_missing(tmp_path):
+    archive_df = validation_utils.read_lab_archive(tmp_path / "does_not_exist.csv")
+    assert archive_df.empty
+    assert list(archive_df.columns) == validation_utils.LAB_ARCHIVE_COLUMNS
+
+
+def test_read_lab_archive_round_trips_appended_data(tmp_path, models, feature_columns):
+    archive_path = tmp_path / "archive.csv"
+    df = _lab_df(grade=VALID_GRADE_1)
+    result = validation_utils.validate_and_score_batch(df, models, feature_columns)
+    validation_utils.append_validated_rows_to_archive(archive_path, result)
+
+    archive_df = validation_utils.read_lab_archive(archive_path)
+    assert len(archive_df) == 1
+    assert archive_df.iloc[0]["Grade"] == VALID_GRADE_1
+
+
+def test_summarize_lab_archive_counts_rows_grades_and_date_range():
+    archive_df = pd.DataFrame({
+        "Production Date": ["2026-08-17", "2026-08-19", "2026-08-18"],
+        "Batch Number": ["B1", "B2", "B3"],
+        "Grade": ["CB4848MO", "CB4848MO", "HB3500GP"],
+    })
+    summary = validation_utils.summarize_lab_archive(archive_df)
+    assert summary["rows"] == 3
+    assert summary["unique_grades"] == 2
+    assert summary["date_range"] == ("2026-08-17", "2026-08-19")
+
+
+def test_summarize_lab_archive_handles_empty_archive():
+    summary = validation_utils.summarize_lab_archive(pd.DataFrame(columns=validation_utils.LAB_ARCHIVE_COLUMNS))
+    assert summary == {"rows": 0, "unique_grades": 0, "date_range": None}

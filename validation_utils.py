@@ -30,6 +30,7 @@ Design notes:
 """
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -291,3 +292,134 @@ def compute_validation_metrics(result_df: pd.DataFrame) -> dict:
         metrics[target] = {"n": n, "r2": r2, "mae": mae, "rmse": rmse}
 
     return metrics
+
+
+def build_predicted_vs_actual_chart_data(result_df: pd.DataFrame) -> dict:
+    """Return {target: DataFrame with columns ["Predicted", "Actual"]},
+    one row per successfully-scored (STATUS_OK) row, ready to hand
+    straight to a scatter plot. Presentational data-shaping only - does
+    not compute or alter any prediction, and never touches the model.
+    """
+    actual_mapping = detect_actual_column_mapping(result_df.columns)
+    ok_rows = result_df[result_df[STATUS_COLUMN] == STATUS_OK]
+
+    charts = {}
+    for target in TARGET_PROPERTIES:
+        predicted_col = PREDICTION_COLUMN_NAMES[target]
+        actual_col = actual_mapping[ACTUAL_COLUMN_NAMES[target]]
+        charts[target] = pd.DataFrame({
+            "Predicted": pd.to_numeric(ok_rows[predicted_col], errors="coerce"),
+            "Actual": pd.to_numeric(ok_rows[actual_col], errors="coerce"),
+        }).dropna()
+    return charts
+
+
+# --- Accumulating validated lab data for future model improvement ----------
+#
+# This section NEVER trains, retrains, or otherwise modifies the deployed
+# model. It only appends plain rows to a local CSV file, so validated lab
+# data can progressively accumulate as candidate future training data
+# (see pages_ui/model_improvement.py for the read side and the planned,
+# human-approved retraining workflow this is laying groundwork for).
+#
+# Best-effort local persistence only - same caveat as
+# model_utils.log_prediction's predictions_log.csv: on Streamlit
+# Community Cloud the filesystem is ephemeral, so this archive will not
+# survive an app restart/redeploy there.
+
+LAB_ARCHIVE_COLUMNS = [
+    "Production Date", "Batch Number", "Grade", "MFR", "XS", "C2",
+    "Actual Izod Impact", "Actual Tensile Modulus", "Actual Flexural Modulus",
+    "Predicted Izod Impact", "Predicted Tensile Modulus", "Predicted Flexural Modulus",
+]
+
+
+def _find_column_by_name(columns, name: str):
+    target = name.strip().lower()
+    for column in columns:
+        if str(column).strip().lower() == target:
+            return column
+    return None
+
+
+def _canonicalize_for_archive(result_df: pd.DataFrame) -> pd.DataFrame:
+    """Rebuild a fixed, predictable column schema (LAB_ARCHIVE_COLUMNS)
+    from result_df, regardless of exactly how the uploaded file spelled
+    its Grade/MFR/XS/C2/Actual headers (result_df keeps the uploader's
+    original header text unchanged - see validate_and_score_batch). A
+    stable schema is what makes repeated appends to one CSV archive safe
+    instead of silently misaligning columns across different uploads.
+    """
+    mapping = detect_column_mapping(result_df.columns)
+    actual_mapping = detect_actual_column_mapping(result_df.columns)
+    production_date_col = _find_column_by_name(result_df.columns, "Production Date")
+    batch_number_col = _find_column_by_name(result_df.columns, "Batch Number")
+    c2_col = mapping.get("C2")
+
+    return pd.DataFrame({
+        "Production Date": result_df[production_date_col] if production_date_col else "",
+        "Batch Number": result_df[batch_number_col] if batch_number_col else "",
+        "Grade": result_df[mapping["Grade"]],
+        "MFR": result_df[mapping["MFR"]],
+        "XS": result_df[mapping["XS"]],
+        "C2": result_df[c2_col] if c2_col else "",
+        "Actual Izod Impact": result_df[actual_mapping["Actual Izod Impact"]],
+        "Actual Tensile Modulus": result_df[actual_mapping["Actual Tensile Modulus"]],
+        "Actual Flexural Modulus": result_df[actual_mapping["Actual Flexural Modulus"]],
+        "Predicted Izod Impact": result_df[PREDICTION_COLUMN_NAMES["Izod Impact"]],
+        "Predicted Tensile Modulus": result_df[PREDICTION_COLUMN_NAMES["Tensile Modulus"]],
+        "Predicted Flexural Modulus": result_df[PREDICTION_COLUMN_NAMES["Flexural Modulus"]],
+    })[LAB_ARCHIVE_COLUMNS]
+
+
+def append_validated_rows_to_archive(archive_path, result_df: pd.DataFrame) -> int:
+    """Append only successfully-scored (STATUS_OK) rows from result_df to
+    a local CSV archive of validated lab data, as candidate future
+    training data. Never touches the deployed model, its parameters, or
+    the .joblib artifact in any way - this only appends rows to a plain
+    CSV file on disk.
+
+    Returns the number of rows appended (0 if there were no OK rows, in
+    which case the file is left untouched - even a missing archive file
+    is not created).
+    """
+    archive_path = Path(archive_path)
+    ok_rows = result_df[result_df[STATUS_COLUMN] == STATUS_OK]
+    if ok_rows.empty:
+        return 0
+
+    canonical = _canonicalize_for_archive(ok_rows)
+    file_exists = archive_path.exists()
+    canonical.to_csv(archive_path, mode="a", header=not file_exists, index=False)
+    return len(canonical)
+
+
+def read_lab_archive(archive_path) -> pd.DataFrame:
+    """Read the accumulated lab-data archive, or an empty DataFrame if it
+    doesn't exist yet (nothing saved yet, or a fresh deploy on an
+    ephemeral filesystem)."""
+    archive_path = Path(archive_path)
+    if not archive_path.exists():
+        return pd.DataFrame(columns=LAB_ARCHIVE_COLUMNS)
+    return pd.read_csv(archive_path)
+
+
+def summarize_lab_archive(archive_df: pd.DataFrame) -> dict:
+    """Summarize the accumulated lab-data archive for display (Model
+    Validation's recap and the Model Improvement roadmap page). Purely
+    descriptive - never used to alter any prediction or the model.
+
+    Returns {"rows": int, "unique_grades": int, "date_range": (min, max)
+    str tuple, or None if no usable Production Date values are present}.
+    """
+    rows = len(archive_df)
+    unique_grades = (
+        int(archive_df["Grade"].nunique()) if rows and "Grade" in archive_df.columns else 0
+    )
+    date_range = None
+    if rows and "Production Date" in archive_df.columns:
+        dates = archive_df["Production Date"].dropna().astype(str)
+        dates = dates[dates.str.strip() != ""]
+        if not dates.empty:
+            date_range = (dates.min(), dates.max())
+    return {"rows": rows, "unique_grades": unique_grades, "date_range": date_range}

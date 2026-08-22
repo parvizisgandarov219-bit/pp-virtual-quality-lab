@@ -19,6 +19,7 @@ def _nav_button(at, key):
 @pytest.fixture()
 def at():
     (REPO_ROOT / "predictions_log.csv").unlink(missing_ok=True)
+    (REPO_ROOT / "lab_validation_archive.csv").unlink(missing_ok=True)
     app_test = AppTest.from_file(str(REPO_ROOT / "app.py"), default_timeout=30)
     app_test.run()
     assert not app_test.exception, f"Initial run raised: {app_test.exception}"
@@ -386,6 +387,16 @@ def test_model_validation_scores_uploaded_lab_file(at):
     assert "Download results (CSV)" in download_labels
     assert "Download results (Excel)" in download_labels
 
+    # Predicted vs. Actual charts rendered without raising (AppTest has
+    # no chart-content inspector, so this is a smoke check).
+    headers = [h.value for h in at.subheader]
+    assert "Predicted vs. Actual" in headers
+
+    # "Save to training archive" control is present, separate from the
+    # download buttons - a distinct, explicit user action.
+    button_labels = [b.label for b in at.button]
+    assert "Save to training archive" in button_labels
+
 
 def test_model_validation_rejects_file_missing_actual_columns(at):
     _nav_button(at, "nav_validation").click().run()
@@ -401,3 +412,104 @@ def test_model_validation_rejects_file_missing_actual_columns(at):
 
     error_texts = [e.value for e in at.error]
     assert any("Missing required column" in t for t in error_texts), error_texts
+
+
+def test_model_validation_save_to_training_archive_accumulates_and_is_visible_on_improvement_page(at):
+    # End-to-end: run validation -> save to archive -> Model Improvement
+    # reflects the accumulated count. Confirms the "progressively
+    # accumulate lab data" workflow actually works across pages.
+    _nav_button(at, "nav_validation").click().run()
+
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("lab_results.csv", VALIDATION_CSV.encode("utf-8"), "text/csv")
+    at.run()
+
+    next(b for b in at.button if b.label == "Run Validation").click().run()
+    assert not at.exception, f"App raised after Run Validation: {at.exception}"
+
+    save_button = next(b for b in at.button if b.label == "Save to training archive")
+    save_button.click().run()
+    assert not at.exception, f"App raised after Save to training archive: {at.exception}"
+
+    success_texts = [s.value for s in at.success]
+    assert any("Saved 2 row(s)" in t for t in success_texts), success_texts
+
+    _nav_button(at, "nav_model_improvement").click().run()
+    assert at.session_state["active_page"] == "model_improvement"
+    assert not at.exception, f"App raised on Model Improvement: {at.exception}"
+
+    stat_values = [m.value for m in at.markdown if "pp-stat-n" in m.value]
+    joined_stats = " ".join(stat_values)
+    assert ">2<" in joined_stats  # 2 OK rows were saved (the untrained-grade row was excluded)
+
+
+def test_model_validation_save_button_warns_when_nothing_to_save(at):
+    _nav_button(at, "nav_validation").click().run()
+
+    # A file where every row fails validation - nothing to save.
+    csv_bytes = (
+        b"Grade,MFR,XS,C2,Actual Izod Impact,Actual Tensile Modulus,Actual Flexural Modulus\n"
+        b"CB2000GT,48.0,16.0,8.6,7.5,1380,1390\n"
+    )
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("all_bad.csv", csv_bytes, "text/csv")
+    at.run()
+
+    next(b for b in at.button if b.label == "Run Validation").click().run()
+    save_button = next(b for b in at.button if b.label == "Save to training archive")
+    save_button.click().run()
+    assert not at.exception
+
+    warning_texts = [w.value for w in at.warning]
+    assert any("No successfully validated rows to save" in t for t in warning_texts), warning_texts
+
+
+# --- Model Improvement -------------------------------------------------------
+
+def test_model_improvement_nav_button_exists_and_navigates(at):
+    _nav_button(at, "nav_model_improvement").click().run()
+    assert at.session_state["active_page"] == "model_improvement"
+    assert not at.exception, f"App raised on Model Improvement: {at.exception}"
+    assert any("Model Improvement" in t.value for t in at.title)
+
+
+def test_model_improvement_shows_zero_accumulated_data_on_clean_state(at):
+    _nav_button(at, "nav_model_improvement").click().run()
+
+    stat_values = [m.value for m in at.markdown if "pp-stat-n" in m.value]
+    joined_stats = " ".join(stat_values)
+    assert ">0<" in joined_stats
+
+    caption_texts = [c.value for c in at.caption]
+    assert any("No lab data has been saved" in t for t in caption_texts), caption_texts
+
+
+def test_model_improvement_documents_the_controlled_roadmap_and_shows_current_metrics(at):
+    _nav_button(at, "nav_model_improvement").click().run()
+
+    body_text = " ".join(m.value for m in at.markdown)
+    assert "Combine data" in body_text
+    assert "Train a candidate model" in body_text
+    assert "Compare metrics" in body_text
+    assert "Human review and approval" in body_text
+    assert "no automatic replacement path" in body_text
+
+    warning_texts = [w.value for w in at.warning]
+    assert any("not implemented yet" in t for t in warning_texts), warning_texts
+
+    # Current production model's real, live metrics are shown for future comparison.
+    metrics_html = " ".join(m.value for m in at.markdown if "pp-info-table" in m.value)
+    assert "0.974" in metrics_html and "0.574" in metrics_html and "0.599" in metrics_html
+
+
+def test_model_improvement_never_touches_the_model_binary(at):
+    import hashlib
+
+    model_path = REPO_ROOT / "pp_virtual_lab_models .joblib"
+    before = hashlib.sha256(model_path.read_bytes()).hexdigest()
+
+    _nav_button(at, "nav_model_improvement").click().run()
+    assert not at.exception
+
+    after = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    assert before == after
