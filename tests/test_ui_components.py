@@ -36,4 +36,7 @@ def test_labels_never_use_the_word_confidence():
 
 def test_nav_items_include_model_information():
     labels = [label for _, label in ui_components.NAV_ITEMS]
-    assert labels == ["Dashboard", "Single Prediction", "Batch Prediction", "Model Information"]
+    assert labels == [
+        "Dashboard", "Single Prediction", "Batch Prediction",
+        "Model Information", "Model Validation",
+    ]

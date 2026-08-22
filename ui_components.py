@@ -34,11 +34,13 @@ PAGE_DASHBOARD = "dashboard"
 PAGE_SINGLE = "single"
 PAGE_BATCH = "batch"
 PAGE_MODEL_INFO = "model_info"
+PAGE_VALIDATION = "validation"
 NAV_ITEMS = [
     (PAGE_DASHBOARD, "Dashboard"),
     (PAGE_SINGLE, "Single Prediction"),
     (PAGE_BATCH, "Batch Prediction"),
     (PAGE_MODEL_INFO, "Model Information"),
+    (PAGE_VALIDATION, "Model Validation"),
 ]
 
 

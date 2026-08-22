@@ -245,6 +245,31 @@ def predict_all(
     return predictions
 
 
+def trained_grades(feature_columns: dict) -> list[str]:
+    """Return the sorted list of grade codes with a real Grade_<code>
+    column in EVERY target's trained schema, derived directly from the
+    loaded model artifact - the model's actual training data, not the
+    curated SUPPORTED_GRADES UI allowlist.
+
+    This is the source of truth for Batch Prediction and Model
+    Validation, both of which should recognize every grade the model was
+    actually trained on. SUPPORTED_GRADES remains a separate, narrower,
+    deliberately curated allowlist used only for the Single Prediction
+    dropdown - it is untouched by this function.
+
+    Grades are intersected across all targets (rather than assuming the
+    schemas agree) so a grade is only ever considered "trained" if
+    predict_all can actually produce a value for it on every target.
+    """
+    prefix = "Grade_"
+    per_target_grades = [
+        {column[len(prefix):] for column in feature_columns[target] if column.startswith(prefix)}
+        for target in TARGET_PROPERTIES
+    ]
+    common_grades = set.intersection(*per_target_grades) if per_target_grades else set()
+    return sorted(common_grades)
+
+
 def resolve_c2_for_family(family: str | None, c2_input: float) -> float:
     """Resolve the C2 (ethylene comonomer) value to use for an interactive
     single prediction, given an optional Grade Family selection.

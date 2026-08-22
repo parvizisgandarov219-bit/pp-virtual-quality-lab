@@ -9,7 +9,7 @@ from batch_utils import (
     summarize_batch_results,
     validate_and_predict_batch,
 )
-from model_utils import SUPPORTED_GRADES
+from model_utils import trained_grades
 
 _STATUS_STYLE = {
     "OK": "background-color: #E4F1E9; color: #2E7D4F;",
@@ -25,6 +25,7 @@ def _highlight_status(row):
 def render(artifact: dict) -> None:
     models = artifact["models"]
     feature_columns = artifact["feature_columns"]
+    valid_grades = trained_grades(feature_columns)
 
     st.markdown('<span class="pp-badge">Batch Prediction</span>', unsafe_allow_html=True)
     st.title("Predict a full batch")
@@ -33,6 +34,10 @@ def render(artifact: dict) -> None:
     with st.expander("How it works", expanded=False):
         st.markdown(
             "Required columns: **Grade**, **MFR**, **XS**, **C2**.\n\n"
+            f"**Grade** may be any of the model's **{len(valid_grades)} trained "
+            "grades** - not limited to the smaller set exposed in the Single "
+            "Prediction dropdown - as long as it has a matching trained schema "
+            "entry.\n\n"
             "**Grade Family** is determined automatically from the Grade "
             "code - grades starting with **C** are HECO, **R** are RACO, "
             "**H** are HOMO. You don't need to supply it. If your file "
@@ -50,7 +55,7 @@ def render(artifact: dict) -> None:
     uploaded_file = st.file_uploader(
         "Upload batch file",
         type=["csv", "xlsx"],
-        help=f"Grade must be one of the {len(SUPPORTED_GRADES)} grades supported on the Dashboard.",
+        help=f"Grade must be one of the model's {len(valid_grades)} trained grades.",
     )
 
     if uploaded_file is None:

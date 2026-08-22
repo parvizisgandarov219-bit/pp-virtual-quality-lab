@@ -232,6 +232,27 @@ BATCH_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Grade Family
 """
 
 
+def test_batch_prediction_accepts_trained_grade_outside_supported_grades(at):
+    # CA0342EX is a real trained grade (model_utils.trained_grades()) but
+    # is NOT in SUPPORTED_GRADES (the narrower Single Prediction dropdown)
+    # - Batch Prediction must still accept it end-to-end through the app.
+    _nav_button(at, "nav_batch").click().run()
+
+    csv_bytes = (
+        "Grade,MFR,XS,C2\nCA0342EX,48.0,16.0,8.6\n"
+    ).encode("utf-8")
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("outside_supported.csv", csv_bytes, "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Batch Predictions")
+    run_button.click().run()
+    assert not at.exception, f"App raised after batch run: {at.exception}"
+
+    result_df = at.dataframe[0].value
+    assert result_df.loc[0, "Validation Status"] == "OK"
+
+
 def test_batch_prediction_preserves_production_date_and_batch_number(at):
     _nav_button(at, "nav_batch").click().run()
     assert at.session_state["active_page"] == "batch"
@@ -265,3 +286,82 @@ def test_batch_prediction_preserves_production_date_and_batch_number(at):
     download_labels = [d.label for d in at.get("download_button")]
     assert "Download results (CSV)" in download_labels
     assert "Download results (Excel)" in download_labels
+
+
+# --- Model Validation ---------------------------------------------------------
+
+VALIDATION_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Actual Izod Impact,Actual Tensile Modulus,Actual Flexural Modulus
+2026-08-17,B-2026-0817-01,CB4848MO,48.0,16.0,8.6,7.6,1360,1400
+2026-08-18,B-2026-0818-04,HB3500GP,48.0,16.0,,3.1,1500,1600
+2026-08-19,B-2026-0819-02,CB2000GT,30.0,10.0,5.0,5.0,1200,1200
+"""
+
+
+def test_model_validation_nav_button_exists_and_navigates(at):
+    _nav_button(at, "nav_validation").click().run()
+    assert at.session_state["active_page"] == "validation"
+    assert not at.exception, f"App raised on Model Validation: {at.exception}"
+    assert any("Validate against new lab data" in t.value for t in at.title)
+
+
+def test_model_validation_scores_uploaded_lab_file(at):
+    import model_utils
+
+    _nav_button(at, "nav_validation").click().run()
+
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("lab_results.csv", VALIDATION_CSV.encode("utf-8"), "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Validation")
+    run_button.click().run()
+    assert not at.exception, f"App raised after Run Validation: {at.exception}"
+
+    # Summary stat tiles: 3 total, 2 scored, 1 excluded (untrained grade)
+    stat_values = [m.value for m in at.markdown if "pp-stat-n" in m.value]
+    joined_stats = " ".join(stat_values)
+    assert ">3<" in joined_stats
+    assert ">2<" in joined_stats
+    assert ">1<" in joined_stats
+
+    warning_texts = [w.value for w in at.warning]
+    assert any("1 row(s) failed validation" in t for t in warning_texts), warning_texts
+
+    result_df = at.dataframe[0].value
+    assert list(result_df["Production Date"]) == ["2026-08-17", "2026-08-18", "2026-08-19"]
+    assert result_df.loc[0, "Validation Status"] == "OK"
+    assert result_df.loc[1, "Validation Status"] == "OK"  # HOMO, blank C2 -> defaults to 0
+    assert result_df.loc[2, "Validation Status"] == "ERROR"  # untrained grade
+
+    # Predicted values for the OK rows match predict_all directly.
+    artifact = model_utils.load_model_artifact(REPO_ROOT / "pp_virtual_lab_models .joblib")
+    expected_0 = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], "CB4848MO", 48.0, 16.0, 8.6
+    )
+    assert result_df.loc[0, "Predicted Izod Impact"] == pytest.approx(expected_0["Izod Impact"])
+
+    # New R²/MAE/RMSE table is rendered, alongside the original training metrics.
+    metrics_html = " ".join(m.value for m in at.markdown if "pp-info-table" in m.value)
+    assert "Training R²" in metrics_html and "New R²" in metrics_html
+    assert "New RMSE" in metrics_html
+    assert "0.974" in metrics_html  # original training R² for Izod Impact, unchanged
+
+    download_labels = [d.label for d in at.get("download_button")]
+    assert "Download results (CSV)" in download_labels
+    assert "Download results (Excel)" in download_labels
+
+
+def test_model_validation_rejects_file_missing_actual_columns(at):
+    _nav_button(at, "nav_validation").click().run()
+
+    csv_bytes = b"Grade,MFR,XS,C2\nCB4848MO,48.0,16.0,8.6\n"
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("incomplete.csv", csv_bytes, "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Validation")
+    run_button.click().run()
+    assert not at.exception, f"App raised on missing-column upload: {at.exception}"
+
+    error_texts = [e.value for e in at.error]
+    assert any("Missing required column" in t for t in error_texts), error_texts
