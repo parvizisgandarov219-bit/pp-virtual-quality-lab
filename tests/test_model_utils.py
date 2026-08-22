@@ -25,16 +25,66 @@ def artifact():
     return model_utils.load_model_artifact(MODEL_PATH)
 
 
-def test_supported_grades_unchanged_by_refactor():
-    # Regression guard: SUPPORTED_GRADES was moved from an inline
-    # GRADE_OPTIONS list in app.py into model_utils.py (P3.1 batch
-    # prediction work). Content and order must be unchanged, since
-    # app.py's default selectbox index depends on this exact order.
+def test_supported_grades_content_and_order():
+    # Regression guard: the original 11 HECO grades must keep their
+    # original list positions - the Single Prediction page's default
+    # selectbox index (8 = CB4848MO) depends on this exact order.
+    # HB3500GP (HOMO) and RB4545MO (RACO) were appended afterward, once
+    # verified present in the real model schema (see
+    # test_derive_grade_family_by_prefix and test_batch_utils.py).
     assert model_utils.SUPPORTED_GRADES == [
         "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
         "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
+        "HB3500GP", "RB4545MO",
     ]
     assert model_utils.SUPPORTED_GRADES[8] == "CB4848MO"
+
+
+def test_supported_grades_have_a_matching_trained_column_for_every_target(artifact):
+    # Every SUPPORTED_GRADES entry must have a real Grade_<code> column in
+    # every target's trained schema - this is what makes it safe to expose
+    # in the UI at all.
+    feature_columns = artifact["feature_columns"]
+    for grade in model_utils.SUPPORTED_GRADES:
+        for target in model_utils.TARGET_PROPERTIES:
+            assert f"Grade_{grade}" in feature_columns[target], (
+                f"{grade} is missing a trained column for {target}"
+            )
+
+
+def test_trained_grades_returns_all_31_real_trained_grades(artifact):
+    # Source of truth for Batch Prediction / Model Validation: every
+    # grade with a real Grade_<code> column in every target's schema,
+    # independent of the curated SUPPORTED_GRADES UI allowlist.
+    grades = model_utils.trained_grades(artifact["feature_columns"])
+    assert len(grades) == 31
+    assert grades == sorted(grades)
+    for grade in ["CA0342EX", "HB3500GP", "RB4545MO", "PP0102TR"]:
+        assert grade in grades
+    # SUPPORTED_GRADES is a strict subset - never wider than the real schema.
+    assert set(model_utils.SUPPORTED_GRADES) <= set(grades)
+    # the classic untrained grade used elsewhere in the suite must stay absent
+    assert UNTRAINED_GRADE not in grades
+
+
+def test_trained_grades_only_includes_grades_common_to_every_target(artifact):
+    feature_columns = artifact["feature_columns"]
+    grades = model_utils.trained_grades(feature_columns)
+    for grade in grades:
+        for target in model_utils.TARGET_PROPERTIES:
+            assert f"Grade_{grade}" in feature_columns[target]
+
+
+def test_trained_grades_excludes_a_grade_missing_from_one_target():
+    feature_columns = {
+        "Izod Impact": ["MFR", "XS", "C2", "Grade_AAA", "Grade_BBB"],
+        "Tensile Modulus": ["MFR", "XS", "C2", "Grade_AAA"],
+        "Flexural Modulus": ["MFR", "XS", "C2", "Grade_AAA", "Grade_BBB"],
+    }
+    # Grade_BBB is missing from Tensile Modulus's schema, so it must not
+    # be considered "trained" even though 2 of 3 targets have it -
+    # predict_all would fail for it via Tensile Modulus.
+    assert model_utils.trained_grades(feature_columns) == ["AAA"]
 
 
 def test_load_model_artifact_has_expected_shape(artifact):
@@ -100,6 +150,7 @@ def test_predict_all_raises_for_untrained_grade(artifact):
 @pytest.mark.parametrize("grade", [
     "CA0900BM", "CB0900MO", "CB1248MO", "CB1640MO", "CB1849MO",
     "CB3000GT", "CB3648MO", "CB4048MO", "CB4848MO", "CB6448MO", "CB8248MO",
+    "HB3500GP", "RB4545MO",
 ])
 def test_predict_all_works_for_every_ui_grade(artifact, grade):
     predictions = model_utils.predict_all(

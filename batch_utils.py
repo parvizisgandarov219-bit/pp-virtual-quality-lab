@@ -25,12 +25,12 @@ from model_utils import (
     C2_BOUNDS,
     FAMILY_HOMO,
     MFR_BOUNDS,
-    SUPPORTED_GRADES,
     TARGET_PROPERTIES,
     XS_BOUNDS,
     derive_grade_family,
     normalize_family_input,
     predict_all,
+    trained_grades,
 )
 
 PREDICTION_COLUMN_NAMES = {
@@ -139,6 +139,12 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
     entirely absent). Row-level problems never raise - they're recorded
     per row in the Validation Status/Error columns instead, and other
     rows in the same batch are still processed.
+
+    Grade validity is checked against every grade actually trained into
+    the model (model_utils.trained_grades(feature_columns)), not the
+    narrower SUPPORTED_GRADES UI allowlist - batch files may legitimately
+    reference any of the model's real trained grades, even ones not
+    exposed in the Single Prediction dropdown.
     """
     mapping = detect_column_mapping(df.columns)
     missing = [name for name in REQUIRED_FILE_COLUMNS if name not in mapping]
@@ -147,6 +153,8 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
             f"Missing required column(s): {', '.join(missing)}. "
             f"Columns found in file: {list(df.columns)}"
         )
+
+    valid_grades = trained_grades(feature_columns)
 
     grade_col = mapping["Grade"]
     mfr_col = mapping["MFR"]
@@ -165,9 +173,10 @@ def validate_and_predict_batch(df: pd.DataFrame, models: dict, feature_columns: 
         grade_valid = False
         if not grade:
             row_errors.append("Grade is missing")
-        elif grade not in SUPPORTED_GRADES:
+        elif grade not in valid_grades:
             row_errors.append(
-                f"Unsupported grade '{grade}'. Supported grades: {', '.join(SUPPORTED_GRADES)}"
+                f"Unsupported grade '{grade}': not part of the model's "
+                f"{len(valid_grades)} trained grades."
             )
         else:
             grade_valid = True

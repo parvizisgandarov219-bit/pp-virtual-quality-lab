@@ -1,6 +1,6 @@
 import streamlit as st
 
-from pages_ui import batch_prediction, dashboard, model_information, single_prediction
+from pages_ui import batch_prediction, dashboard, model_information, model_validation, single_prediction
 from ui_components import (
     MODEL_PATH,
     PAGE_BATCH,
@@ -9,6 +9,7 @@ from ui_components import (
     PAGE_MODEL_INFO,
     PAGE_SINGLE,
     PAGE_TITLE,
+    PAGE_VALIDATION,
     get_model_artifact,
     inject_theme_css,
     render_sidebar,
@@ -46,5 +47,7 @@ elif active_page == PAGE_BATCH:
     batch_prediction.render(artifact)
 elif active_page == PAGE_MODEL_INFO:
     model_information.render(artifact)
+elif active_page == PAGE_VALIDATION:
+    model_validation.render(artifact)
 else:
     dashboard.render(artifact)

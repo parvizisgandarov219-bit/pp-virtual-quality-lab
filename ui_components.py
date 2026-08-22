@@ -34,11 +34,13 @@ PAGE_DASHBOARD = "dashboard"
 PAGE_SINGLE = "single"
 PAGE_BATCH = "batch"
 PAGE_MODEL_INFO = "model_info"
+PAGE_VALIDATION = "validation"
 NAV_ITEMS = [
     (PAGE_DASHBOARD, "Dashboard"),
     (PAGE_SINGLE, "Single Prediction"),
     (PAGE_BATCH, "Batch Prediction"),
     (PAGE_MODEL_INFO, "Model Information"),
+    (PAGE_VALIDATION, "Model Validation"),
 ]
 
 
@@ -163,6 +165,18 @@ table.pp-info-table td { padding: 8px 12px; border-bottom: 1px solid var(--pp-li
 table.pp-info-table tr:last-child td { border-bottom: none; }
 table.pp-info-table td.num { font-variant-numeric: tabular-nums; }
 table.pp-info-table td.mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, monospace; }
+
+.pp-flow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin: 4px 0 2px; }
+.pp-flow-step {
+    flex: 1 1 150px; min-width: 140px; border: 1px solid var(--pp-line); border-radius: 6px;
+    padding: 10px 12px; background: var(--pp-surface);
+}
+.pp-flow-step .t { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--pp-ink-muted); }
+.pp-flow-step .d { font-size: 12.5px; font-weight: 600; color: var(--pp-ink); margin-top: 4px; line-height: 1.3; }
+.pp-flow-arrow { display: flex; align-items: center; justify-content: center; color: var(--pp-accent); font-size: 16px; flex: 0 0 20px; }
+
+.pp-io-table td.yes { color: var(--pp-ok); font-weight: 700; }
+.pp-io-table td.no { color: var(--pp-danger); font-weight: 700; }
 </style>
 """
 

@@ -37,7 +37,7 @@ def test_dashboard_is_default_page_and_shows_performance_cards(at):
     assert "0.574" in joined  # Tensile Modulus R²
     assert "0.599" in joined  # Flexural Modulus R²
 
-    assert any("11 of 31 trained grades exposed" in c.value for c in at.sidebar.caption)
+    assert any("13 of 31 trained grades exposed" in c.value for c in at.sidebar.caption)
 
 
 def test_dashboard_quick_action_navigates_to_single(at):
@@ -48,7 +48,7 @@ def test_dashboard_quick_action_navigates_to_single(at):
 def test_dashboard_shows_model_status_and_grade_count(at):
     values = " ".join(m.value for m in at.markdown if "pp-card-value" in m.value)
     assert "Loaded" in values
-    assert "11" in values and "of 31 trained" in values
+    assert "13" in values and "of 31 trained" in values
 
 
 # --- Model Information -------------------------------------------------------
@@ -66,21 +66,65 @@ def test_model_information_page_shows_targets_and_grades(at):
     assert "Tensile Modulus" in table_html and "0.574" in table_html
     assert "Flexural Modulus" in table_html and "0.599" in table_html
     # every supported grade is listed with its derived family
-    for grade in ["CA0900BM", "CB4848MO", "CB8248MO"]:
+    for grade in ["CA0900BM", "CB4848MO", "CB8248MO", "HB3500GP", "RB4545MO"]:
         assert grade in table_html
     assert "HECO" in table_html
+    assert "HOMO" in table_html
+    assert "RACO" in table_html
+
+
+def test_model_information_explains_how_the_prediction_works(at):
+    _nav_button(at, "nav_model_info").click().run()
+    assert not at.exception, f"App raised on Model Information: {at.exception}"
+
+    headers = [h.value for h in at.subheader]
+    assert "How the Prediction Works" in headers
+    assert "What affects the prediction?" in headers
+    assert "The algorithm" in headers
+
+    # the pipeline diagram shows all 5 steps in order
+    flow_html = " ".join(m.value for m in at.markdown if "pp-flow" in m.value)
+    for step in ["Inputs", "Feature construction", "Trained model",
+                 "Independent regressions", "Output"]:
+        assert step in flow_html
+
+    # input-role table explains all 4 real inputs
+    body_text = " ".join(m.value for m in at.markdown)
+    assert "Melt Flow Rate" in body_text
+    assert "Xylene Solubles" in body_text
+    assert "Ethylene comonomer" in body_text
+
+    # what-affects-the-prediction table correctly separates inputs from metadata
+    io_html = " ".join(m.value for m in at.markdown if "pp-io-table" in m.value)
+    assert "Model input" in io_html
+    assert "Production Date" in io_html and "Batch Number" in io_html
+    assert "Not a model input" in io_html or "Metadata only" in io_html
+
+    # R² is explicitly framed as validation/performance, never as confidence
+    assert "model validation statistic, not a confidence score" in body_text
+
+    # the algorithm section shows the real, live hyperparameters
+    algo_html = " ".join(m.value for m in at.markdown if "pp-info-table" in m.value)
+    assert "n_estimators" in algo_html and "500" in algo_html
+    assert "min_samples_leaf" in algo_html and "2" in algo_html
+    assert "random_state" in algo_html and "42" in algo_html
+
+    # limitations cover all four required points
+    assert "not laboratory measurements" in body_text
+    assert "domain of the training data" in body_text
+    assert "Unsupported grades must not be predicted" in body_text
+    assert "substantially lower R²" in body_text
 
 
 # --- Single Prediction -------------------------------------------------------
 #
-# Grade Family is now auto-derived from the grade prefix and shown
-# read-only (see pages_ui/single_prediction.py::_family_display). Every
-# grade in SUPPORTED_GRADES starts with "C" (-> HECO), so these AppTest
-# scenarios can only exercise the HECO/C2-required path through the real
-# selectbox. The HOMO/RACO branches (C2 auto-disable/default) are real
-# and tested directly against pages_ui.single_prediction's helper
-# function in tests/test_pages_ui.py, using real HOMO/RACO grade codes
-# from the model's full trained schema that aren't yet exposed here.
+# Grade Family is auto-derived from the grade prefix and shown read-only
+# (see pages_ui/single_prediction.py::_family_display). SUPPORTED_GRADES
+# now includes one grade per family - CB4848MO (HECO), HB3500GP (HOMO),
+# RB4545MO (RACO) - so all three branches, including the HOMO C2
+# auto-disable/default behavior, are exercised directly through the real
+# selectbox below, not just via the pure-function tests in
+# tests/test_pages_ui.py.
 
 def test_single_prediction_default_matches_known_baseline(at):
     _nav_button(at, "nav_single").click().run()
@@ -121,6 +165,64 @@ def test_single_prediction_family_reflects_selected_grade(at):
     assert family_display.value == "HECO — High Impact Copolymer (ICP)"
 
 
+def test_single_prediction_homo_grade_disables_and_zeroes_c2(at):
+    import model_utils
+
+    _nav_button(at, "nav_single").click().run()
+
+    grade_box = next(s for s in at.selectbox if s.label == "Grade")
+    grade_box.set_value("HB3500GP").run()
+
+    family_display = next(t for t in at.text_input if t.label == "Grade family")
+    assert family_display.value == "HOMO — Homopolymer"
+
+    c2_input = next(n for n in at.number_input if n.label == "C2, wt%")
+    assert c2_input.value == 0.0
+    assert c2_input.disabled is True
+
+    run_button = next(b for b in at.button if b.label == "Run Prediction")
+    run_button.click().run()
+    assert not at.exception, f"App raised after Run Prediction (HOMO): {at.exception}"
+
+    artifact = model_utils.load_model_artifact(REPO_ROOT / "pp_virtual_lab_models .joblib")
+    expected = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], "HB3500GP", 48.0, 16.0, 0.0
+    )
+    values = " ".join(m.value for m in at.markdown if "pp-card-value" in m.value)
+    assert f"{expected['Izod Impact']:.2f}" in values
+    assert f"{expected['Tensile Modulus']:.0f}" in values
+    assert f"{expected['Flexural Modulus']:.0f}" in values
+
+
+def test_single_prediction_raco_grade_keeps_c2_enabled(at):
+    import model_utils
+
+    _nav_button(at, "nav_single").click().run()
+
+    grade_box = next(s for s in at.selectbox if s.label == "Grade")
+    grade_box.set_value("RB4545MO").run()
+
+    family_display = next(t for t in at.text_input if t.label == "Grade family")
+    assert family_display.value == "RACO — Random Copolymer"
+
+    c2_input = next(n for n in at.number_input if n.label == "C2, wt%")
+    assert c2_input.disabled is False
+    assert c2_input.value == 8.6  # unchanged default, still editable
+
+    run_button = next(b for b in at.button if b.label == "Run Prediction")
+    run_button.click().run()
+    assert not at.exception, f"App raised after Run Prediction (RACO): {at.exception}"
+
+    artifact = model_utils.load_model_artifact(REPO_ROOT / "pp_virtual_lab_models .joblib")
+    expected = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], "RB4545MO", 48.0, 16.0, 8.6
+    )
+    values = " ".join(m.value for m in at.markdown if "pp-card-value" in m.value)
+    assert f"{expected['Izod Impact']:.2f}" in values
+    assert f"{expected['Tensile Modulus']:.0f}" in values
+    assert f"{expected['Flexural Modulus']:.0f}" in values
+
+
 # --- Batch Prediction --------------------------------------------------------
 
 BATCH_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Grade Family
@@ -128,6 +230,27 @@ BATCH_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Grade Family
 2026-08-18,B-2026-0818-04,CA0900BM,12.5,4.2,1.1,
 2026-08-19,B-2026-0819-02,CB2000GT,30.0,10.0,5.0,HECO
 """
+
+
+def test_batch_prediction_accepts_trained_grade_outside_supported_grades(at):
+    # CA0342EX is a real trained grade (model_utils.trained_grades()) but
+    # is NOT in SUPPORTED_GRADES (the narrower Single Prediction dropdown)
+    # - Batch Prediction must still accept it end-to-end through the app.
+    _nav_button(at, "nav_batch").click().run()
+
+    csv_bytes = (
+        "Grade,MFR,XS,C2\nCA0342EX,48.0,16.0,8.6\n"
+    ).encode("utf-8")
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("outside_supported.csv", csv_bytes, "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Batch Predictions")
+    run_button.click().run()
+    assert not at.exception, f"App raised after batch run: {at.exception}"
+
+    result_df = at.dataframe[0].value
+    assert result_df.loc[0, "Validation Status"] == "OK"
 
 
 def test_batch_prediction_preserves_production_date_and_batch_number(at):
@@ -163,3 +286,82 @@ def test_batch_prediction_preserves_production_date_and_batch_number(at):
     download_labels = [d.label for d in at.get("download_button")]
     assert "Download results (CSV)" in download_labels
     assert "Download results (Excel)" in download_labels
+
+
+# --- Model Validation ---------------------------------------------------------
+
+VALIDATION_CSV = """Production Date,Batch Number,Grade,MFR,XS,C2,Actual Izod Impact,Actual Tensile Modulus,Actual Flexural Modulus
+2026-08-17,B-2026-0817-01,CB4848MO,48.0,16.0,8.6,7.6,1360,1400
+2026-08-18,B-2026-0818-04,HB3500GP,48.0,16.0,,3.1,1500,1600
+2026-08-19,B-2026-0819-02,CB2000GT,30.0,10.0,5.0,5.0,1200,1200
+"""
+
+
+def test_model_validation_nav_button_exists_and_navigates(at):
+    _nav_button(at, "nav_validation").click().run()
+    assert at.session_state["active_page"] == "validation"
+    assert not at.exception, f"App raised on Model Validation: {at.exception}"
+    assert any("Validate against new lab data" in t.value for t in at.title)
+
+
+def test_model_validation_scores_uploaded_lab_file(at):
+    import model_utils
+
+    _nav_button(at, "nav_validation").click().run()
+
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("lab_results.csv", VALIDATION_CSV.encode("utf-8"), "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Validation")
+    run_button.click().run()
+    assert not at.exception, f"App raised after Run Validation: {at.exception}"
+
+    # Summary stat tiles: 3 total, 2 scored, 1 excluded (untrained grade)
+    stat_values = [m.value for m in at.markdown if "pp-stat-n" in m.value]
+    joined_stats = " ".join(stat_values)
+    assert ">3<" in joined_stats
+    assert ">2<" in joined_stats
+    assert ">1<" in joined_stats
+
+    warning_texts = [w.value for w in at.warning]
+    assert any("1 row(s) failed validation" in t for t in warning_texts), warning_texts
+
+    result_df = at.dataframe[0].value
+    assert list(result_df["Production Date"]) == ["2026-08-17", "2026-08-18", "2026-08-19"]
+    assert result_df.loc[0, "Validation Status"] == "OK"
+    assert result_df.loc[1, "Validation Status"] == "OK"  # HOMO, blank C2 -> defaults to 0
+    assert result_df.loc[2, "Validation Status"] == "ERROR"  # untrained grade
+
+    # Predicted values for the OK rows match predict_all directly.
+    artifact = model_utils.load_model_artifact(REPO_ROOT / "pp_virtual_lab_models .joblib")
+    expected_0 = model_utils.predict_all(
+        artifact["models"], artifact["feature_columns"], "CB4848MO", 48.0, 16.0, 8.6
+    )
+    assert result_df.loc[0, "Predicted Izod Impact"] == pytest.approx(expected_0["Izod Impact"])
+
+    # New R²/MAE/RMSE table is rendered, alongside the original training metrics.
+    metrics_html = " ".join(m.value for m in at.markdown if "pp-info-table" in m.value)
+    assert "Training R²" in metrics_html and "New R²" in metrics_html
+    assert "New RMSE" in metrics_html
+    assert "0.974" in metrics_html  # original training R² for Izod Impact, unchanged
+
+    download_labels = [d.label for d in at.get("download_button")]
+    assert "Download results (CSV)" in download_labels
+    assert "Download results (Excel)" in download_labels
+
+
+def test_model_validation_rejects_file_missing_actual_columns(at):
+    _nav_button(at, "nav_validation").click().run()
+
+    csv_bytes = b"Grade,MFR,XS,C2\nCB4848MO,48.0,16.0,8.6\n"
+    uploader = at.get("file_uploader")[0]
+    uploader.upload("incomplete.csv", csv_bytes, "text/csv")
+    at.run()
+
+    run_button = next(b for b in at.button if b.label == "Run Validation")
+    run_button.click().run()
+    assert not at.exception, f"App raised on missing-column upload: {at.exception}"
+
+    error_texts = [e.value for e in at.error]
+    assert any("Missing required column" in t for t in error_texts), error_texts

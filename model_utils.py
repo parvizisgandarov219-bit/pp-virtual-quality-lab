@@ -18,6 +18,11 @@ TARGET_PROPERTIES = ["Izod Impact", "Tensile Modulus", "Flexural Modulus"]
 # for every target - see tests/test_model_utils.py). This is the single
 # source of truth for both the single-prediction dropdown and batch
 # validation, so they cannot drift apart.
+#
+# HB3500GP (HOMO) and RB4545MO (RACO) are appended after the original 11
+# HECO grades, rather than inserted alphabetically, specifically so the
+# original grades keep their original list positions - app.py's default
+# selectbox index (8 = CB4848MO) depends on that order being stable.
 SUPPORTED_GRADES = [
     "CA0900BM",
     "CB0900MO",
@@ -30,6 +35,8 @@ SUPPORTED_GRADES = [
     "CB4848MO",
     "CB6448MO",
     "CB8248MO",
+    "HB3500GP",
+    "RB4545MO",
 ]
 
 # Input bounds shared by the single-prediction form and batch validation.
@@ -68,11 +75,9 @@ FAMILY_LABELS = {
 #   C -> HECO (High Impact Copolymer / ICP)
 #   R -> RACO (Random Copolymer)
 #   H -> HOMO (Homopolymer)
-# All 11 grades in SUPPORTED_GRADES currently start with "C", so today
-# every selectable grade derives to HECO - the HOMO/RACO branches are
-# real and tested, but only reachable today via grade codes elsewhere in
-# the model's 31-grade trained schema (e.g. "HB..." / "RB..." / "RA...")
-# that aren't yet exposed in SUPPORTED_GRADES.
+# SUPPORTED_GRADES spans all three prefixes (11 "C" / HECO grades,
+# HB3500GP / HOMO, RB4545MO / RACO), so all three branches are reachable
+# through the real UI, not just via direct unit tests.
 GRADE_FAMILY_PREFIX_MAP = {
     "C": FAMILY_HECO,
     "R": FAMILY_RACO,
@@ -238,6 +243,31 @@ def predict_all(
         feature_row = build_feature_row(target, feature_columns, grade, mfr, xs, c2)
         predictions[target] = models[target].predict(feature_row)[0]
     return predictions
+
+
+def trained_grades(feature_columns: dict) -> list[str]:
+    """Return the sorted list of grade codes with a real Grade_<code>
+    column in EVERY target's trained schema, derived directly from the
+    loaded model artifact - the model's actual training data, not the
+    curated SUPPORTED_GRADES UI allowlist.
+
+    This is the source of truth for Batch Prediction and Model
+    Validation, both of which should recognize every grade the model was
+    actually trained on. SUPPORTED_GRADES remains a separate, narrower,
+    deliberately curated allowlist used only for the Single Prediction
+    dropdown - it is untouched by this function.
+
+    Grades are intersected across all targets (rather than assuming the
+    schemas agree) so a grade is only ever considered "trained" if
+    predict_all can actually produce a value for it on every target.
+    """
+    prefix = "Grade_"
+    per_target_grades = [
+        {column[len(prefix):] for column in feature_columns[target] if column.startswith(prefix)}
+        for target in TARGET_PROPERTIES
+    ]
+    common_grades = set.intersection(*per_target_grades) if per_target_grades else set()
+    return sorted(common_grades)
 
 
 def resolve_c2_for_family(family: str | None, c2_input: float) -> float:
